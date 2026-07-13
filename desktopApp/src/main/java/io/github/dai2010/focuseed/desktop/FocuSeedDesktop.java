@@ -35,6 +35,7 @@ import java.awt.GridLayout;
 import java.awt.RenderingHints;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.awt.event.WindowStateListener;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -59,7 +60,7 @@ public final class FocuSeedDesktop {
 
     private final JFrame frame = new JFrame("FocuSeed");
     private final Font cuteFont = loadCuteFont();
-    private final JLabel phaseLabel = new JLabel("准备发芽 🌱", SwingConstants.CENTER);
+    private final JLabel phaseLabel = new JLabel("准备发芽 (｡･ω･｡)", SwingConstants.CENTER);
     private final JLabel timerLabel = new JLabel("00:00", SwingConstants.CENTER);
     private final JLabel roundLabel = new JLabel("轮次 0 / 0", SwingConstants.CENTER);
     private final JLabel hintLabel = new JLabel("休息时可以退出；工作开始会自动回到全屏。", SwingConstants.CENTER);
@@ -76,6 +77,9 @@ public final class FocuSeedDesktop {
     private FocusPhase hiddenPhase = FocusPhase.IDLE;
     private int hiddenRound = -1;
     private long hiddenUntilMillis;
+    private boolean menuExpanded;
+    private JPanel menuPanel;
+    private JButton menuToggleButton;
     private JButton updateDownloadButton;
     private JButton updateAccelerateButton;
     private UpdateInfo pendingUpdate;
@@ -94,6 +98,7 @@ public final class FocuSeedDesktop {
                 handleWindowClosing();
             }
         });
+        frame.addWindowStateListener(focusWindowStateGuard());
         setWindowIcon();
         frame.setLayout(new BorderLayout());
         frame.setContentPane(shell());
@@ -126,14 +131,14 @@ public final class FocuSeedDesktop {
     }
 
     private JPanel header() {
-        JPanel panel = new JPanel(new GridLayout(5, 1, 0, 6));
+        JPanel panel = new JPanel(new BorderLayout(0, 8));
         panel.setOpaque(false);
 
         JLabel title = new JLabel("FocuSeed 软萌专注花园", SwingConstants.CENTER);
         title.setForeground(TEXT);
         title.setFont(cuteFont.deriveFont(Font.PLAIN, 42f));
 
-        JLabel subtitle = new JLabel("种下一颗番茄种子，把注意力轻轻收回来 ✨", SwingConstants.CENTER);
+        JLabel subtitle = new JLabel("种下一颗番茄种子，把注意力轻轻收回来 (´▽`)", SwingConstants.CENTER);
         subtitle.setForeground(MUTED);
         subtitle.setFont(cuteFont.deriveFont(Font.PLAIN, 18f));
 
@@ -144,11 +149,33 @@ public final class FocuSeedDesktop {
         updateLabel.setForeground(MUTED);
         updateLabel.setFont(cuteFont.deriveFont(Font.PLAIN, 14f));
 
-        panel.add(title);
-        panel.add(subtitle);
-        panel.add(hintLabel);
-        panel.add(platformLabel);
-        panel.add(updateLabel);
+        JPanel topRow = new JPanel(new BorderLayout(12, 0));
+        topRow.setOpaque(false);
+        menuToggleButton = button("菜单 +");
+        menuToggleButton.addActionListener(event -> setMenuExpanded(!menuExpanded));
+        topRow.add(menuToggleButton, BorderLayout.WEST);
+        topRow.add(title, BorderLayout.CENTER);
+
+        JPanel summary = new JPanel(new GridLayout(2, 1, 0, 6));
+        summary.setOpaque(false);
+        summary.add(subtitle);
+        summary.add(hintLabel);
+
+        menuPanel = new JPanel(new GridLayout(4, 1, 10, 10));
+        menuPanel.setOpaque(false);
+        menuPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(PINK, 2, true),
+            BorderFactory.createEmptyBorder(12, 12, 12, 12)
+        ));
+        menuPanel.add(settingsPanel());
+        menuPanel.add(updateButtonsPanel());
+        menuPanel.add(platformLabel);
+        menuPanel.add(updateLabel);
+
+        panel.add(topRow, BorderLayout.NORTH);
+        panel.add(summary, BorderLayout.CENTER);
+        panel.add(menuPanel, BorderLayout.SOUTH);
+        setMenuExpanded(false);
         return panel;
     }
 
@@ -173,9 +200,21 @@ public final class FocuSeedDesktop {
     }
 
     private JPanel controls() {
-        JPanel panel = new JPanel(new GridLayout(3, 1, 14, 14));
-        panel.setOpaque(false);
+        JPanel buttons = new JPanel(new GridLayout(1, 3, 12, 12));
+        buttons.setOpaque(false);
+        JButton start = button("开始种下 (｡･ω･｡)");
+        JButton exitFullscreen = button("休息退出 (´･ω･`)");
+        JButton stop = button("停止 (｡•́︿•̀｡)");
+        start.addActionListener(event -> startSession());
+        exitFullscreen.addActionListener(event -> requestExitDuringSession());
+        stop.addActionListener(event -> stopSession());
+        buttons.add(start);
+        buttons.add(exitFullscreen);
+        buttons.add(stop);
+        return buttons;
+    }
 
+    private JPanel settingsPanel() {
         JPanel settings = new JPanel(new GridLayout(1, 6, 12, 12));
         settings.setOpaque(false);
         settings.add(label("工作分钟"));
@@ -184,34 +223,33 @@ public final class FocuSeedDesktop {
         settings.add(styleSpinner(breakMinutes));
         settings.add(label("轮数"));
         settings.add(styleSpinner(rounds));
+        return settings;
+    }
 
-        JPanel buttons = new JPanel(new GridLayout(1, 3, 12, 12));
-        buttons.setOpaque(false);
-        JButton start = button("🌱 开始种下");
-        JButton exitFullscreen = button("🍵 休息退出");
-        JButton stop = button("🌙 停止");
-        start.addActionListener(event -> startSession());
-        exitFullscreen.addActionListener(event -> requestExitDuringSession());
-        stop.addActionListener(event -> stopSession());
-        buttons.add(start);
-        buttons.add(exitFullscreen);
-        buttons.add(stop);
-
+    private JPanel updateButtonsPanel() {
         JPanel updateButtons = new JPanel(new GridLayout(1, 2, 12, 12));
         updateButtons.setOpaque(false);
-        updateDownloadButton = button("⬇ 下载更新");
-        updateAccelerateButton = button("⚡ 切换加速下载");
+        updateDownloadButton = button("下载更新 (´▽`)");
+        updateAccelerateButton = button("切换加速下载 (ง •_•)ง");
         updateDownloadButton.setEnabled(false);
         updateAccelerateButton.setEnabled(false);
         updateDownloadButton.addActionListener(event -> startUpdateDownload(false));
         updateAccelerateButton.addActionListener(event -> startUpdateDownload(true));
         updateButtons.add(updateDownloadButton);
         updateButtons.add(updateAccelerateButton);
+        return updateButtons;
+    }
 
-        panel.add(settings);
-        panel.add(buttons);
-        panel.add(updateButtons);
-        return panel;
+    private void setMenuExpanded(boolean expanded) {
+        menuExpanded = expanded;
+        if (menuPanel != null) {
+            menuPanel.setVisible(expanded);
+        }
+        if (menuToggleButton != null) {
+            menuToggleButton.setText(expanded ? "菜单 -" : "菜单 +");
+        }
+        frame.revalidate();
+        frame.repaint();
     }
 
     private JLabel label(String text) {
@@ -269,12 +307,12 @@ public final class FocuSeedDesktop {
         if (snapshot.phase() == FocusPhase.WORKING) {
             if (exitChancesLeft <= 0) {
                 enterFullscreen();
-                hintLabel.setText("三次机会已经用完啦，先陪小种子完成这一轮吧。🌱");
+                hintLabel.setText("三次机会已经用完啦，先陪小种子完成这一轮吧 (｡•́︿•̀｡)");
                 return;
             }
             exitChancesLeft--;
             hideBrieflyDuringWork();
-            hintLabel.setText("工作期临时退出机会剩余 " + exitChancesLeft + " 次，计时不会暂停。🐾");
+            hintLabel.setText("工作期临时退出机会剩余 " + exitChancesLeft + " 次，计时不会暂停 (ง •_•)ง");
             return;
         }
         frame.dispose();
@@ -285,7 +323,7 @@ public final class FocuSeedDesktop {
         FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
         FocusPhase phase = snapshot.phase();
         if (phase == FocusPhase.IDLE) {
-            phaseLabel.setText("准备发芽 🌱");
+            phaseLabel.setText("准备发芽 (｡･ω･｡)");
             timerLabel.setText("00:00");
             roundLabel.setText("轮次 0 / " + rounds.getValue());
             hintLabel.setText("休息时可以退出；工作开始会自动回到全屏。剩余退出机会 " + exitChancesLeft + " 次。");
@@ -296,7 +334,7 @@ public final class FocuSeedDesktop {
             hiddenPhase = FocusPhase.IDLE;
             hiddenRound = -1;
             hiddenUntilMillis = 0L;
-            phaseLabel.setText("花开完成啦 🌸");
+            phaseLabel.setText("花开完成啦 (*´▽`*)");
             timerLabel.setText("00:00");
             roundLabel.setText("轮次 " + snapshot.roundText());
             hintLabel.setText("今天也认真照顾了自己的注意力。辛苦啦！");
@@ -310,13 +348,13 @@ public final class FocuSeedDesktop {
             hiddenRound = -1;
             hiddenUntilMillis = 0L;
             enterFullscreen();
-            phaseLabel.setText("专注发芽中 🌱");
+            phaseLabel.setText("专注发芽中 (ง •_•)ง");
             hintLabel.setText("工作期会保持全屏。临时退出机会剩余 " + exitChancesLeft + " 次。");
         } else {
             if (!frame.isVisible() && isTemporarilyHiddenFor(snapshot)) {
                 return;
             }
-            phaseLabel.setText("软软休息中 🍵");
+            phaseLabel.setText("软软休息中 (´･ω･`)");
             hintLabel.setText("休息期间可以退出应用；下一段工作会自动回到全屏。");
         }
         timerLabel.setText(snapshot.remainingText());
@@ -331,6 +369,30 @@ public final class FocuSeedDesktop {
             return;
         }
         requestExitDuringSession();
+    }
+
+    private WindowStateListener focusWindowStateGuard() {
+        return event -> {
+            if ((event.getNewState() & JFrame.ICONIFIED) == 0) {
+                return;
+            }
+            FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
+            if (snapshot.phase() == FocusPhase.BREAK) {
+                hideUntilPhaseChanges(snapshot);
+                return;
+            }
+            if (snapshot.phase() == FocusPhase.WORKING) {
+                if (exitChancesLeft > 0) {
+                    exitChancesLeft--;
+                    hideBrieflyDuringWork();
+                    hintLabel.setText("工作期临时退出机会剩余 " + exitChancesLeft + " 次，计时不会暂停 (ง •_•)ง");
+                    return;
+                }
+                frame.setState(JFrame.NORMAL);
+                enterFullscreen();
+                hintLabel.setText("三次机会已经用完啦，先陪小种子完成这一轮吧 (｡•́︿•̀｡)");
+            }
+        };
     }
 
     private void checkForUpdatesSilently() {
@@ -486,7 +548,7 @@ public final class FocuSeedDesktop {
         hiddenUntilMillis = 0L;
         leaveFullscreen();
         frame.setVisible(false);
-        hintLabel.setText("已经躲进休息小窝；下一段工作会自动弹回全屏。🍵");
+        hintLabel.setText("已经躲进休息小窝；下一段工作会自动弹回全屏 (´･ω･`)");
     }
 
     private void hideBrieflyDuringWork() {

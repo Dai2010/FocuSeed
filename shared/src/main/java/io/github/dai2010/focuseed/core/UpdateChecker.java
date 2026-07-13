@@ -16,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class UpdateChecker {
-    public static final String CURRENT_VERSION = "0.1.1";
+    public static final String CURRENT_VERSION = "0.1.2";
     public static final String PLATFORM_ANDROID = "android";
     private static final String LATEST_RELEASE_API = "https://api.github.com/repos/Dai2010/FocuSeed/releases/latest";
     private static final String ACCELERATOR_PREFIX = "https://ghfast.top/";

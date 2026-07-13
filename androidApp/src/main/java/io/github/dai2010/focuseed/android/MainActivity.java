@@ -2,6 +2,7 @@ package io.github.dai2010.focuseed.android;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
@@ -40,6 +41,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import io.github.dai2010.focuseed.core.FocusPhase;
@@ -58,7 +60,12 @@ public final class MainActivity extends Activity {
     private static final String KEY_BREAK = "break_minutes";
     private static final String KEY_ROUNDS = "rounds";
     private static final String KEY_EXIT_CHANCES = "exit_chances";
+    private static final String KEY_INITIAL_PERMISSION_CHECK_DONE = "initial_permission_check_done";
     private static final int EXIT_CHANCES = 3;
+    private static final int INITIAL_PERMISSION_REQUEST = 20;
+    private static final long WORK_EXIT_RETURN_DELAY_MILLIS = 3_000L;
+    private static final long FORCED_RETURN_DELAY_MILLIS = 1_000L;
+    private static final long LOCK_TASK_RETRY_MILLIS = 30_000L;
     private static final long NO_DOWNLOAD = -1L;
     private static final int TEXT = Color.rgb(82, 65, 72);
     private static final int MUTED = Color.rgb(137, 118, 128);
@@ -86,6 +93,8 @@ public final class MainActivity extends Activity {
     private TextView policyText;
     private TextView chanceText;
     private TextView updateText;
+    private LinearLayout menuPanel;
+    private Button menuToggleButton;
     private Button updateDownloadButton;
     private Button updateAccelerateButton;
     private EditText workInput;
@@ -101,6 +110,12 @@ public final class MainActivity extends Activity {
     private boolean leavingForSettings;
     private boolean leavingForUpdateInstall;
     private boolean plannedBackgroundExit;
+    private boolean backgroundExitHandled;
+    private boolean activityResumed;
+    private boolean menuExpanded;
+    private boolean initialPolicyGuidePending;
+    private boolean lockTaskHintShown;
+    private long lastLockTaskAttemptMillis;
     private UpdateInfo pendingUpdate;
     private long updateDownloadId = NO_DOWNLOAD;
     private boolean updateInstallPrompted;
@@ -136,6 +151,7 @@ public final class MainActivity extends Activity {
         updateDialerInfo();
         updatePolicyInfo();
         render();
+        runInitialPermissionCheckOnce();
         checkForUpdatesSilently();
         handler.post(tick);
     }
@@ -145,6 +161,7 @@ public final class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         restoreSession();
+        backgroundExitHandled = false;
         applyFocusWindowMode();
         render();
     }
@@ -152,10 +169,12 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
         leavingForPhone = false;
         leavingForSettings = false;
         leavingForUpdateInstall = false;
         plannedBackgroundExit = false;
+        backgroundExitHandled = false;
         restoreSession();
         if (session.snapshot(System.currentTimeMillis()).phase() == FocusPhase.WORKING) {
             cancelWorkAlarm();
@@ -169,6 +188,19 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        activityResumed = false;
+        handleUnexpectedBackgroundExit();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        handleUnexpectedBackgroundExit();
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
         handleUnexpectedBackgroundExit();
     }
 
@@ -180,7 +212,24 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (menuExpanded) {
+            setMenuExpanded(false);
+            return;
+        }
         requestExitDuringSession();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == INITIAL_PERMISSION_REQUEST || requestCode == 10) {
+            registerCallStateListenerIfAllowed();
+            updatePolicyInfo();
+            if (initialPolicyGuidePending) {
+                initialPolicyGuidePending = false;
+                promptNotificationPolicyIfNeeded();
+            }
+        }
     }
 
     private View createLayout() {
@@ -200,13 +249,13 @@ public final class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
-        card.setPadding(dp(22), dp(24), dp(22), dp(24));
+        card.setPadding(dp(22), dp(20), dp(22), dp(24));
         card.setBackground(rounded(CARD, 28));
         root.addView(card, fullWidth());
 
         TextView title = text("FocuSeed 软萌专注花园", 31, TEXT, false);
-        TextView subtitle = text("种下一颗番茄种子，把注意力轻轻收回来", 15, MUTED, false);
-        phaseText = text("准备发芽", 28, TEXT, false);
+        TextView subtitle = text("种下一颗番茄种子，把注意力轻轻收回来 (´▽`)", 15, MUTED, false);
+        phaseText = text("准备发芽 (｡･ω･｡)", 28, TEXT, false);
         timerText = text("00:00", 64, MINT, false);
         roundText = text("轮次 0 / 4", 19, TEXT, false);
         hintText = text("休息时可以退出；工作开始会自动回到全屏。", 14, MUTED, false);
@@ -231,9 +280,9 @@ public final class MainActivity extends Activity {
         settings.addView(labelWithInput("休息", breakInput));
         settings.addView(labelWithInput("轮数", roundsInput));
 
-        Button start = button("开始种下");
+        Button start = button("开始种下 (｡･ω･｡)");
         start.setOnClickListener(view -> startSession());
-        Button exit = button("休息/临时退出");
+        Button exit = button("休息/临时退出 (´･ω･`)");
         exit.setOnClickListener(view -> requestExitDuringSession());
         Button dial = button("打开系统拨号器");
         dial.setOnClickListener(view -> openDialer());
@@ -246,6 +295,37 @@ public final class MainActivity extends Activity {
         updateAccelerateButton.setEnabled(false);
         updateAccelerateButton.setOnClickListener(view -> startUpdateDownload(true));
 
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        menuToggleButton = button("菜单 +");
+        menuToggleButton.setOnClickListener(view -> setMenuExpanded(!menuExpanded));
+        topBar.addView(menuToggleButton, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        menuPanel = new LinearLayout(this);
+        menuPanel.setOrientation(LinearLayout.VERTICAL);
+        menuPanel.setGravity(Gravity.CENTER_HORIZONTAL);
+        menuPanel.setPadding(0, dp(8), 0, dp(8));
+        menuPanel.setBackground(rounded(Color.argb(150, 255, 248, 251), 20));
+        menuPanel.addView(settings);
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(dial, fullWidth());
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(dnd, fullWidth());
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(updateDownloadButton, fullWidth());
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(updateAccelerateButton, fullWidth());
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(dialerText);
+        menuPanel.addView(policyText);
+        menuPanel.addView(updateText);
+
+        card.addView(topBar, fullWidth());
+        card.addView(menuPanel, fullWidth());
         card.addView(title);
         card.addView(subtitle);
         card.addView(spacer(18));
@@ -254,25 +334,13 @@ public final class MainActivity extends Activity {
         timerCard.addView(roundText);
         card.addView(timerCard, fullWidth());
         card.addView(spacer(16));
-        card.addView(settings);
-        card.addView(spacer(14));
         card.addView(start, fullWidth());
         card.addView(spacer(8));
         card.addView(exit, fullWidth());
-        card.addView(spacer(8));
-        card.addView(dial, fullWidth());
-        card.addView(spacer(8));
-        card.addView(dnd, fullWidth());
-        card.addView(spacer(8));
-        card.addView(updateDownloadButton, fullWidth());
-        card.addView(spacer(8));
-        card.addView(updateAccelerateButton, fullWidth());
         card.addView(spacer(14));
         card.addView(hintText);
         card.addView(chanceText);
-        card.addView(dialerText);
-        card.addView(policyText);
-        card.addView(updateText);
+        setMenuExpanded(false);
         return scrollView;
     }
 
@@ -331,6 +399,16 @@ public final class MainActivity extends Activity {
         return view;
     }
 
+    private void setMenuExpanded(boolean expanded) {
+        menuExpanded = expanded;
+        if (menuPanel != null) {
+            menuPanel.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        }
+        if (menuToggleButton != null) {
+            menuToggleButton.setText(expanded ? "菜单 -" : "菜单 +");
+        }
+    }
+
     private void startSession() {
         currentWorkMinutes = parsePositive(workInput, 25);
         currentBreakMinutes = parsePositive(breakInput, 5);
@@ -359,7 +437,7 @@ public final class MainActivity extends Activity {
         FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
         FocusPhase phase = snapshot.phase();
         if (phase == FocusPhase.IDLE) {
-            phaseText.setText("准备发芽");
+            phaseText.setText("准备发芽 (｡･ω･｡)");
             timerText.setText("00:00");
             roundText.setText("轮次 0 / " + currentRounds);
             hintText.setText("休息时可以退出；工作开始会自动回到全屏。");
@@ -369,7 +447,7 @@ public final class MainActivity extends Activity {
         if (phase == FocusPhase.FINISHED) {
             clearSession();
             cancelWorkAlarm();
-            phaseText.setText("花开完成啦");
+            phaseText.setText("花开完成啦 (*´▽`*)");
             timerText.setText("00:00");
             roundText.setText("轮次 " + snapshot.roundText());
             hintText.setText("今天也认真照顾了自己的注意力。辛苦啦！");
@@ -378,10 +456,10 @@ public final class MainActivity extends Activity {
         }
         if (phase == FocusPhase.WORKING) {
             applyFocusWindowMode();
-            phaseText.setText("专注发芽中");
+            phaseText.setText("专注发芽中 (ง •_•)ง");
             hintText.setText("工作期会保持全屏。临时退出会消耗机会，计时不会暂停。");
         } else {
-            phaseText.setText("软软休息中");
+            phaseText.setText("软软休息中 (´･ω･`)");
             hintText.setText("休息期间可以退出应用；下一段工作会自动回到全屏。");
         }
         timerText.setText(snapshot.remainingText());
@@ -393,31 +471,35 @@ public final class MainActivity extends Activity {
         FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
         FocusPhase phase = snapshot.phase();
         if (phase == FocusPhase.IDLE || phase == FocusPhase.FINISHED) {
+            stopFocusLockTaskIfActive();
             finish();
             return;
         }
         if (phase == FocusPhase.BREAK) {
+            stopFocusLockTaskIfActive();
             scheduleFocusAlarm(System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis()));
-            Toast.makeText(this, "休息小窝开启，下一段工作会自动回到全屏。", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "休息小窝开启，下一段工作会自动回到全屏 (´･ω･`)", Toast.LENGTH_LONG).show();
             plannedBackgroundExit = true;
             moveTaskToBack(true);
             return;
         }
         if (exitChancesLeft <= 0) {
             applyFocusWindowMode();
-            Toast.makeText(this, "三次机会已经用完啦，先陪小种子完成这一轮吧。", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "三次机会已经用完啦，先陪小种子完成这一轮吧 (｡•́︿•̀｡)", Toast.LENGTH_LONG).show();
             return;
         }
         exitChancesLeft--;
         saveSession(true);
-        scheduleFocusAlarm(System.currentTimeMillis() + 3_000L);
-        Toast.makeText(this, "临时退出机会剩余 " + exitChancesLeft + " 次，马上会回到全屏。", Toast.LENGTH_LONG).show();
+        stopFocusLockTaskIfActive();
+        scheduleFocusReturn(WORK_EXIT_RETURN_DELAY_MILLIS);
+        Toast.makeText(this, "临时退出机会剩余 " + exitChancesLeft + " 次，马上会回到全屏 (ง •_•)ง", Toast.LENGTH_LONG).show();
         plannedBackgroundExit = true;
         moveTaskToBack(true);
     }
 
     private void openDialer() {
         leavingForPhone = true;
+        stopFocusLockTaskIfActive();
         Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:"));
         startActivity(intent);
     }
@@ -559,6 +641,7 @@ public final class MainActivity extends Activity {
     private void openDownloadedUpdate(Uri apkUri) {
         if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
             leavingForUpdateInstall = true;
+            stopFocusLockTaskIfActive();
             Intent settingsIntent = new Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:" + getPackageName())
@@ -572,6 +655,7 @@ public final class MainActivity extends Activity {
             intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             leavingForUpdateInstall = true;
+            stopFocusLockTaskIfActive();
             startActivity(intent);
         } catch (Exception error) {
             Toast.makeText(this, "无法打开安装器，请到系统下载目录手动安装。", Toast.LENGTH_LONG).show();
@@ -596,6 +680,7 @@ public final class MainActivity extends Activity {
         }
         if (!manager.isNotificationPolicyAccessGranted()) {
             leavingForSettings = true;
+            stopFocusLockTaskIfActive();
             startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
             return;
         }
@@ -625,13 +710,48 @@ public final class MainActivity extends Activity {
 
     private void registerCallStateListenerIfAllowed() {
         if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {Manifest.permission.READ_PHONE_STATE}, 10);
             return;
         }
         TelephonyManager manager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
         if (manager != null) {
             manager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
         }
+    }
+
+    private void runInitialPermissionCheckOnce() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (prefs.getBoolean(KEY_INITIAL_PERMISSION_CHECK_DONE, false)) {
+            return;
+        }
+        prefs.edit().putBoolean(KEY_INITIAL_PERMISSION_CHECK_DONE, true).apply();
+
+        ArrayList<String> permissions = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.READ_PHONE_STATE);
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+
+        if (!permissions.isEmpty()) {
+            initialPolicyGuidePending = true;
+            requestPermissions(permissions.toArray(new String[0]), INITIAL_PERMISSION_REQUEST);
+            return;
+        }
+        promptNotificationPolicyIfNeeded();
+    }
+
+    private void promptNotificationPolicyIfNeeded() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null || manager.isNotificationPolicyAccessGranted()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("首次权限检测")
+            .setMessage("FocuSeed 需要勿扰访问来屏蔽通知并保留电话。这个引导只在首次运行自动出现；以后可从左上角菜单手动打开。")
+            .setPositiveButton("去设置", (dialog, which) -> configureDoNotDisturb())
+            .setNegativeButton("稍后", null)
+            .show();
     }
 
     private void applyFocusWindowMode() {
@@ -662,9 +782,57 @@ public final class MainActivity extends Activity {
                     | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
             );
         }
+        if (activityResumed && session.snapshot(System.currentTimeMillis()).phase() == FocusPhase.WORKING) {
+            startFocusLockTaskIfPossible();
+        }
+    }
+
+    private void startFocusLockTaskIfPossible() {
+        if (isLockTaskActive()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastLockTaskAttemptMillis < LOCK_TASK_RETRY_MILLIS) {
+            return;
+        }
+        lastLockTaskAttemptMillis = now;
+        try {
+            startLockTask();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException error) {
+            if (!lockTaskHintShown) {
+                lockTaskHintShown = true;
+                Toast.makeText(this, "如系统弹出“屏幕固定”，请确认开启；否则只能尽力拉回全屏。", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void stopFocusLockTaskIfActive() {
+        if (!isLockTaskActive()) {
+            return;
+        }
+        try {
+            stopLockTask();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException ignored) {
+        }
+    }
+
+    private boolean isLockTaskActive() {
+        ActivityManager manager = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        if (manager == null) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            return manager.getLockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE;
+        }
+        return manager.isInLockTaskMode();
     }
 
     private void handleUnexpectedBackgroundExit() {
+        if (backgroundExitHandled) {
+            return;
+        }
+        backgroundExitHandled = true;
+
         if (plannedBackgroundExit) {
             plannedBackgroundExit = false;
             return;
@@ -687,11 +855,26 @@ public final class MainActivity extends Activity {
         if (exitChancesLeft > 0) {
             exitChancesLeft--;
             saveSession(true);
-            scheduleFocusAlarm(System.currentTimeMillis() + 3_000L);
+            scheduleFocusReturn(WORK_EXIT_RETURN_DELAY_MILLIS);
             return;
         }
         saveSession(true);
-        scheduleFocusAlarm(System.currentTimeMillis() + 1_000L);
+        scheduleFocusReturn(FORCED_RETURN_DELAY_MILLIS);
+    }
+
+    private void scheduleFocusReturn(long delayMillis) {
+        long safeDelay = Math.max(FORCED_RETURN_DELAY_MILLIS, delayMillis);
+        scheduleFocusAlarm(System.currentTimeMillis() + safeDelay);
+        handler.postDelayed(() -> {
+            FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
+            if (snapshot.phase() != FocusPhase.WORKING || leavingForPhone || leavingForSettings || leavingForUpdateInstall) {
+                return;
+            }
+            try {
+                startActivity(focusIntent());
+            } catch (RuntimeException ignored) {
+            }
+        }, safeDelay);
     }
 
     private void scheduleFocusAlarm(long triggerAtMillis) {
@@ -712,10 +895,14 @@ public final class MainActivity extends Activity {
     }
 
     private PendingIntent focusPendingIntent() {
+        return PendingIntent.getActivity(this, 1001, focusIntent(), pendingIntentFlags());
+    }
+
+    private Intent focusIntent() {
         Intent intent = new Intent(this, MainActivity.class);
         intent.setAction(ACTION_FORCE_FOCUS);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        return PendingIntent.getActivity(this, 1001, intent, pendingIntentFlags());
+        return intent;
     }
 
     private int pendingIntentFlags() {

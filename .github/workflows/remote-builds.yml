@@ -16,7 +16,7 @@ permissions:
 
 env:
   APP_NAME: FocuSeed
-  APP_VERSION: 0.1.1
+  APP_VERSION: 0.1.2
   GRADLE_VERSION: 8.10.2
   MAIN_CLASS: io.github.dai2010.focuseed.desktop.FocuSeedDesktop
   WINDOWS_UPGRADE_UUID: 2d6f047e-638e-4c9f-9d93-8ae315a51efb
