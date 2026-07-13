@@ -5,6 +5,7 @@ app_image_dir="${1:?app image directory is required}"
 output_dir="${2:?output directory is required}"
 version="${3:-0.1.0}"
 pkgrel="${4:-1}"
+icon_path="${5:-packaging/icons/focuseed-256.png}"
 
 pkgname="focuseed"
 arch="x86_64"
@@ -12,8 +13,15 @@ workdir="$(mktemp -d)"
 pkgroot="$workdir/pkgroot"
 builddate="${SOURCE_DATE_EPOCH:-$(date -u +%s)}"
 
-mkdir -p "$pkgroot/opt/focuseed" "$pkgroot/usr/bin" "$pkgroot/usr/share/applications" "$output_dir"
+mkdir -p "$pkgroot/opt/focuseed" \
+    "$pkgroot/usr/bin" \
+    "$pkgroot/usr/share/applications" \
+    "$pkgroot/usr/share/icons/hicolor/256x256/apps" \
+    "$output_dir"
 cp -R "$app_image_dir"/. "$pkgroot/opt/focuseed/"
+if [[ -f "$icon_path" ]]; then
+    cp "$icon_path" "$pkgroot/usr/share/icons/hicolor/256x256/apps/focuseed.png"
+fi
 
 cat > "$pkgroot/usr/bin/focuseed" <<'EOF'
 #!/usr/bin/env sh
@@ -27,6 +35,7 @@ Type=Application
 Name=FocuSeed
 Comment=Strict Pomodoro focus timer
 Exec=focuseed
+Icon=focuseed
 Terminal=false
 Categories=Utility;Office;
 EOF

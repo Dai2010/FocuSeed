@@ -100,6 +100,7 @@ jobs:
             --app-version "$APP_VERSION" \
             --vendor "Dai2010" \
             --description "Strict Pomodoro focus timer" \
+            --icon packaging/icons/focuseed-256.png \
             --license-file LICENSE \
             --input desktopApp/build/install/focuseed/lib \
             --main-jar "$main_jar" \
@@ -114,6 +115,7 @@ jobs:
             --app-version "$APP_VERSION" \
             --vendor "Dai2010" \
             --description "Strict Pomodoro focus timer" \
+            --icon packaging/icons/focuseed-256.png \
             --license-file LICENSE \
             --input desktopApp/build/install/focuseed/lib \
             --main-jar "$main_jar" \
@@ -138,7 +140,8 @@ jobs:
             desktopApp/build/install/focuseed \
             dist/linux/renamed \
             "$APP_VERSION" \
-            1
+            1 \
+            packaging/icons/focuseed-256.png
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -197,6 +200,7 @@ jobs:
             --app-version $env:APP_VERSION `
             --vendor Dai2010 `
             --description 'Strict Pomodoro focus timer' `
+            --icon packaging/icons/focuseed.ico `
             --license-file LICENSE `
             --input desktopApp/build/install/focuseed/lib `
             --main-jar $mainJar.Name `
@@ -211,6 +215,7 @@ jobs:
             --app-version $env:APP_VERSION `
             --vendor Dai2010 `
             --description 'Strict Pomodoro focus timer' `
+            --icon packaging/icons/focuseed.ico `
             --license-file LICENSE `
             --input desktopApp/build/install/focuseed/lib `
             --main-jar $mainJar.Name `

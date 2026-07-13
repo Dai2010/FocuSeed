@@ -9,6 +9,7 @@ import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
+import javax.swing.ImageIcon;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -78,6 +79,7 @@ public final class FocuSeedDesktop {
                 handleWindowClosing();
             }
         });
+        setWindowIcon();
         frame.setLayout(new BorderLayout());
         frame.setContentPane(shell());
         frame.setMinimumSize(new Dimension(900, 680));
@@ -381,6 +383,13 @@ public final class FocuSeedDesktop {
             JOptionPane.showMessageDialog(null, "可爱字体加载失败，将使用系统中文字体。", "FocuSeed", JOptionPane.INFORMATION_MESSAGE);
         }
         return new Font(Font.SANS_SERIF, Font.PLAIN, 16);
+    }
+
+    private void setWindowIcon() {
+        java.net.URL iconUrl = FocuSeedDesktop.class.getResource("/icons/focuseed.png");
+        if (iconUrl != null) {
+            frame.setIconImage(new ImageIcon(iconUrl).getImage());
+        }
     }
 
     private static String platformText() {
