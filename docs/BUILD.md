@@ -19,14 +19,14 @@
 
 ## 远端构建入口
 
-`.github/workflows/remote-builds.yml` 是远端构建和发布入口：
+`.github/workflows/remote-builds.yml` 是远端构建和发布入口，产物版本号由 workflow 中的 `APP_VERSION` 控制：
 
-- Android debug APK：`FocuSeed-v0.1.0-android-debug.apk`。
-- Linux DEB：`FocuSeed-v0.1.0-linux.deb`。
-- Linux DPKG 命名包：`FocuSeed-v0.1.0-linux.dpkg`。
-- Linux RPM：`FocuSeed-v0.1.0-linux.rpm`。
-- Arch Linux：`focuseed-0.1.0-1-x86_64.pkg.tar.zst`。
-- Windows EXE：`FocuSeed-v0.1.0-windows.exe`。
-- Windows MSI：`FocuSeed-v0.1.0-windows.msi`。
+- Android debug APK：`FocuSeed-v<version>-android-debug.apk`。
+- Linux DEB：`FocuSeed-v<version>-linux.deb`。
+- Linux DPKG 命名包：`FocuSeed-v<version>-linux.dpkg`。
+- Linux RPM：`FocuSeed-v<version>-linux.rpm`。
+- Arch Linux：`focuseed-<version>-1-x86_64.pkg.tar.zst`。
+- Windows EXE：`FocuSeed-v<version>-windows.exe`。
+- Windows MSI：`FocuSeed-v<version>-windows.msi`。
 
-推送 `v0.1.0` tag 时，workflow 会把这些产物发布到 GitHub Release，并使用 `docs/releases/v0.1.0.md` 作为发布介绍。
+推送 `v*` tag 时，workflow 会把这些产物发布到 GitHub Release，并优先使用 `docs/releases/<tag>.md` 作为发布介绍。

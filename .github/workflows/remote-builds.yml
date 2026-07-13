@@ -16,7 +16,7 @@ permissions:
 
 env:
   APP_NAME: FocuSeed
-  APP_VERSION: 0.1.0
+  APP_VERSION: 0.1.1
   GRADLE_VERSION: 8.10.2
   MAIN_CLASS: io.github.dai2010.focuseed.desktop.FocuSeedDesktop
 
@@ -254,7 +254,11 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t release_files < <(find release-artifacts -type f | sort)
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            notes_file="docs/releases/v0.1.0.md"
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "FocuSeed ${GITHUB_REF_NAME}" \
-            --notes-file docs/releases/v0.1.0.md \
+            --notes-file "$notes_file" \
             "${release_files[@]}"

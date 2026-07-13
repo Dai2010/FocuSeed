@@ -10,8 +10,12 @@ public final class FocusSession {
     }
 
     public void start(FocusSettings newSettings, long nowMillis) {
+        resume(newSettings, nowMillis);
+    }
+
+    public void resume(FocusSettings newSettings, long originalStartedAtMillis) {
         settings = newSettings;
-        startedAtMillis = nowMillis;
+        startedAtMillis = originalStartedAtMillis;
         running = true;
     }
 
@@ -21,6 +25,10 @@ public final class FocusSession {
 
     public boolean isRunning() {
         return running;
+    }
+
+    public long startedAtMillis() {
+        return startedAtMillis;
     }
 
     public FocusSnapshot snapshot(long nowMillis) {
