@@ -21,7 +21,7 @@
 
 `.github/workflows/remote-builds.yml` 是远端构建和发布入口，产物版本号由 workflow 中的 `APP_VERSION` 控制：
 
-- Android debug APK：`FocuSeed-v<version>-android-debug.apk`。
+- Android 签名 APK：`FocuSeed-v<version>-android.apk`。
 - Linux DEB：`FocuSeed-v<version>-linux.deb`。
 - Linux DPKG 命名包：`FocuSeed-v<version>-linux.dpkg`。
 - Linux RPM：`FocuSeed-v<version>-linux.rpm`。
@@ -30,3 +30,12 @@
 - Windows MSI：`FocuSeed-v<version>-windows.msi`。
 
 推送 `v*` tag 时，workflow 会把这些产物发布到 GitHub Release，并优先使用 `docs/releases/<tag>.md` 作为发布介绍。
+
+## Android 签名
+
+Android APK 使用 GitHub Actions Secrets 中的固定 release keystore 签名，确保从本次签名包开始后续同包名版本可以直接覆盖更新。所需 Secrets：
+
+- `FOCUSEED_ANDROID_KEYSTORE_BASE64`
+- `FOCUSEED_ANDROID_KEYSTORE_PASSWORD`
+- `FOCUSEED_ANDROID_KEY_ALIAS`
+- `FOCUSEED_ANDROID_KEY_PASSWORD`

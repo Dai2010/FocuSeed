@@ -4,6 +4,8 @@ import io.github.dai2010.focuseed.core.FocusPhase;
 import io.github.dai2010.focuseed.core.FocusSession;
 import io.github.dai2010.focuseed.core.FocusSettings;
 import io.github.dai2010.focuseed.core.FocusSnapshot;
+import io.github.dai2010.focuseed.core.UpdateChecker;
+import io.github.dai2010.focuseed.core.UpdateInfo;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -33,8 +35,15 @@ import java.awt.GridLayout;
 import java.awt.RenderingHints;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 
 public final class FocuSeedDesktop {
@@ -55,6 +64,7 @@ public final class FocuSeedDesktop {
     private final JLabel roundLabel = new JLabel("轮次 0 / 0", SwingConstants.CENTER);
     private final JLabel hintLabel = new JLabel("休息时可以退出；工作开始会自动回到全屏。", SwingConstants.CENTER);
     private final JLabel platformLabel = new JLabel(platformText(), SwingConstants.CENTER);
+    private final JLabel updateLabel = new JLabel("更新：启动时会静默检查", SwingConstants.CENTER);
     private final JSpinner workMinutes = new JSpinner(new SpinnerNumberModel(25, 1, 240, 1));
     private final JSpinner breakMinutes = new JSpinner(new SpinnerNumberModel(5, 1, 120, 1));
     private final JSpinner rounds = new JSpinner(new SpinnerNumberModel(4, 1, 24, 1));
@@ -66,6 +76,11 @@ public final class FocuSeedDesktop {
     private FocusPhase hiddenPhase = FocusPhase.IDLE;
     private int hiddenRound = -1;
     private long hiddenUntilMillis;
+    private JButton updateDownloadButton;
+    private JButton updateAccelerateButton;
+    private UpdateInfo pendingUpdate;
+    private Thread updateDownloadThread;
+    private int updateDownloadGeneration;
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new FocuSeedDesktop().show());
@@ -87,6 +102,7 @@ public final class FocuSeedDesktop {
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
         timer.start();
+        checkForUpdatesSilently();
     }
 
     private JPanel shell() {
@@ -110,7 +126,7 @@ public final class FocuSeedDesktop {
     }
 
     private JPanel header() {
-        JPanel panel = new JPanel(new GridLayout(4, 1, 0, 6));
+        JPanel panel = new JPanel(new GridLayout(5, 1, 0, 6));
         panel.setOpaque(false);
 
         JLabel title = new JLabel("FocuSeed 软萌专注花园", SwingConstants.CENTER);
@@ -125,11 +141,14 @@ public final class FocuSeedDesktop {
         platformLabel.setFont(cuteFont.deriveFont(Font.PLAIN, 14f));
         hintLabel.setForeground(MUTED);
         hintLabel.setFont(cuteFont.deriveFont(Font.PLAIN, 15f));
+        updateLabel.setForeground(MUTED);
+        updateLabel.setFont(cuteFont.deriveFont(Font.PLAIN, 14f));
 
         panel.add(title);
         panel.add(subtitle);
         panel.add(hintLabel);
         panel.add(platformLabel);
+        panel.add(updateLabel);
         return panel;
     }
 
@@ -154,7 +173,7 @@ public final class FocuSeedDesktop {
     }
 
     private JPanel controls() {
-        JPanel panel = new JPanel(new GridLayout(2, 1, 14, 14));
+        JPanel panel = new JPanel(new GridLayout(3, 1, 14, 14));
         panel.setOpaque(false);
 
         JPanel settings = new JPanel(new GridLayout(1, 6, 12, 12));
@@ -178,8 +197,20 @@ public final class FocuSeedDesktop {
         buttons.add(exitFullscreen);
         buttons.add(stop);
 
+        JPanel updateButtons = new JPanel(new GridLayout(1, 2, 12, 12));
+        updateButtons.setOpaque(false);
+        updateDownloadButton = button("⬇ 下载更新");
+        updateAccelerateButton = button("⚡ 切换加速下载");
+        updateDownloadButton.setEnabled(false);
+        updateAccelerateButton.setEnabled(false);
+        updateDownloadButton.addActionListener(event -> startUpdateDownload(false));
+        updateAccelerateButton.addActionListener(event -> startUpdateDownload(true));
+        updateButtons.add(updateDownloadButton);
+        updateButtons.add(updateAccelerateButton);
+
         panel.add(settings);
         panel.add(buttons);
+        panel.add(updateButtons);
         return panel;
     }
 
@@ -300,6 +331,153 @@ public final class FocuSeedDesktop {
             return;
         }
         requestExitDuringSession();
+    }
+
+    private void checkForUpdatesSilently() {
+        Thread thread = new Thread(() -> {
+            try {
+                UpdateInfo info = UpdateChecker.checkLatest(UpdateChecker.detectDesktopAssetKey());
+                SwingUtilities.invokeLater(() -> onUpdateChecked(info));
+            } catch (Exception ignored) {
+                SwingUtilities.invokeLater(() -> updateLabel.setText("更新：静默检查失败，可稍后重启应用再试"));
+            }
+        }, "FocuSeed-UpdateCheck");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void onUpdateChecked(UpdateInfo info) {
+        if (!info.updateAvailable()) {
+            updateLabel.setText("更新：已是最新版 v" + info.currentVersion());
+            return;
+        }
+        pendingUpdate = info;
+        updateDownloadButton.setEnabled(true);
+        updateAccelerateButton.setEnabled(true);
+        updateLabel.setText("发现新版本 v" + info.latestVersion() + "：" + info.assetName());
+        Object[] options = {"下载更新", "稍后", "加速下载"};
+        int choice = JOptionPane.showOptionDialog(
+            frame,
+            "当前 v" + info.currentVersion() + "，最新 v" + info.latestVersion()
+                + "。\n默认从 GitHub 原地址下载到系统下载目录；如果卡住，可手动切换 ghfast 加速。",
+            "发现 FocuSeed 新版本",
+            JOptionPane.DEFAULT_OPTION,
+            JOptionPane.INFORMATION_MESSAGE,
+            null,
+            options,
+            options[0]
+        );
+        if (choice == 0) {
+            startUpdateDownload(false);
+        } else if (choice == 2) {
+            startUpdateDownload(true);
+        }
+    }
+
+    private synchronized void startUpdateDownload(boolean accelerated) {
+        if (pendingUpdate == null || pendingUpdate.downloadUrl().trim().isEmpty()) {
+            updateLabel.setText("更新：暂时没有可下载的更新");
+            return;
+        }
+        updateDownloadGeneration++;
+        int generation = updateDownloadGeneration;
+        if (updateDownloadThread != null) {
+            updateDownloadThread.interrupt();
+        }
+        Path downloads = downloadsDirectory();
+        Path destination = downloads.resolve(pendingUpdate.assetName());
+        String sourceUrl = accelerated ? UpdateChecker.acceleratedUrl(pendingUpdate.downloadUrl()) : pendingUpdate.downloadUrl();
+        updateLabel.setText(accelerated ? "更新：已切换 ghfast 加速，准备下载…" : "更新：正在从 GitHub 原地址下载…");
+        updateDownloadThread = new Thread(() -> downloadUpdate(sourceUrl, destination, generation), "FocuSeed-UpdateDownload");
+        updateDownloadThread.setDaemon(true);
+        updateDownloadThread.start();
+    }
+
+    private void downloadUpdate(String sourceUrl, Path destination, int generation) {
+        HttpURLConnection connection = null;
+        Path partialDestination = destination.resolveSibling(destination.getFileName() + ".part-" + generation);
+        try {
+            Files.createDirectories(destination.getParent());
+            connection = (HttpURLConnection) new URL(sourceUrl).openConnection();
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(15_000);
+            connection.setRequestProperty("User-Agent", "FocuSeed/" + UpdateChecker.CURRENT_VERSION);
+            long total = connection.getContentLengthLong();
+            try (InputStream input = connection.getInputStream(); OutputStream output = Files.newOutputStream(partialDestination)) {
+                byte[] buffer = new byte[16_384];
+                long downloaded = 0L;
+                long lastUpdate = 0L;
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (generation != updateDownloadGeneration || Thread.currentThread().isInterrupted()) {
+                        return;
+                    }
+                    output.write(buffer, 0, read);
+                    downloaded += read;
+                    long now = System.currentTimeMillis();
+                    if (now - lastUpdate > 250L) {
+                        lastUpdate = now;
+                        setUpdateProgress(downloaded, total);
+                    }
+                }
+            }
+            if (generation == updateDownloadGeneration) {
+                Files.move(partialDestination, destination, StandardCopyOption.REPLACE_EXISTING);
+                SwingUtilities.invokeLater(() -> {
+                    updateLabel.setText("更新：下载完成，文件已保存到 " + destination);
+                    JOptionPane.showMessageDialog(
+                        frame,
+                        "安装包已保存到：\n" + destination + "\n\n请运行该安装包覆盖安装。Windows/Linux 包名保持一致，后续版本可直接升级。",
+                        "FocuSeed 更新已下载",
+                        JOptionPane.INFORMATION_MESSAGE
+                    );
+                });
+            }
+        } catch (IOException error) {
+            if (generation == updateDownloadGeneration) {
+                try {
+                    Files.deleteIfExists(partialDestination);
+                } catch (IOException ignored) {
+                }
+                SwingUtilities.invokeLater(() -> updateLabel.setText("更新：下载失败，可点“切换加速下载”重试"));
+            }
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+            if (generation != updateDownloadGeneration) {
+                try {
+                    Files.deleteIfExists(partialDestination);
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    private void setUpdateProgress(long downloaded, long total) {
+        SwingUtilities.invokeLater(() -> {
+            if (total > 0L) {
+                long percent = Math.min(100L, downloaded * 100L / total);
+                updateLabel.setText("更新下载进度：" + percent + "%（" + readableBytes(downloaded) + " / " + readableBytes(total) + "）");
+            } else {
+                updateLabel.setText("更新：正在下载 " + readableBytes(downloaded) + "，如卡住可切换加速");
+            }
+        });
+    }
+
+    private static Path downloadsDirectory() {
+        return new File(System.getProperty("user.home", "."), "Downloads").toPath();
+    }
+
+    private static String readableBytes(long bytes) {
+        if (bytes < 1024L) {
+            return bytes + " B";
+        }
+        double kib = bytes / 1024.0;
+        if (kib < 1024.0) {
+            return String.format(Locale.ROOT, "%.1f KiB", kib);
+        }
+        return String.format(Locale.ROOT, "%.1f MiB", kib / 1024.0);
     }
 
     private void hideUntilPhaseChanges(FocusSnapshot snapshot) {

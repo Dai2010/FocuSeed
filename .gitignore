@@ -13,6 +13,9 @@ build/
 **/build/
 local.properties
 *.iml
+*.jks
+*.keystore
+*.p12
 
 # Generated packages
 *.apk

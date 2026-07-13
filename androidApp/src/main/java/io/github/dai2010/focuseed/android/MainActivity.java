@@ -3,6 +3,8 @@ package io.github.dai2010.focuseed.android;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlarmManager;
+import android.app.AlertDialog;
+import android.app.DownloadManager;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
@@ -10,12 +12,14 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -42,6 +46,8 @@ import io.github.dai2010.focuseed.core.FocusPhase;
 import io.github.dai2010.focuseed.core.FocusSession;
 import io.github.dai2010.focuseed.core.FocusSettings;
 import io.github.dai2010.focuseed.core.FocusSnapshot;
+import io.github.dai2010.focuseed.core.UpdateChecker;
+import io.github.dai2010.focuseed.core.UpdateInfo;
 
 public final class MainActivity extends Activity {
     private static final String ACTION_FORCE_FOCUS = "io.github.dai2010.focuseed.FORCE_FOCUS";
@@ -53,6 +59,7 @@ public final class MainActivity extends Activity {
     private static final String KEY_ROUNDS = "rounds";
     private static final String KEY_EXIT_CHANCES = "exit_chances";
     private static final int EXIT_CHANCES = 3;
+    private static final long NO_DOWNLOAD = -1L;
     private static final int TEXT = Color.rgb(82, 65, 72);
     private static final int MUTED = Color.rgb(137, 118, 128);
     private static final int MINT = Color.rgb(112, 213, 176);
@@ -78,6 +85,9 @@ public final class MainActivity extends Activity {
     private TextView dialerText;
     private TextView policyText;
     private TextView chanceText;
+    private TextView updateText;
+    private Button updateDownloadButton;
+    private Button updateAccelerateButton;
     private EditText workInput;
     private EditText breakInput;
     private EditText roundsInput;
@@ -89,7 +99,19 @@ public final class MainActivity extends Activity {
     private long sessionStartedAtMillis;
     private boolean leavingForPhone;
     private boolean leavingForSettings;
+    private boolean leavingForUpdateInstall;
     private boolean plannedBackgroundExit;
+    private UpdateInfo pendingUpdate;
+    private long updateDownloadId = NO_DOWNLOAD;
+    private boolean updateInstallPrompted;
+    private boolean updateCheckStarted;
+
+    private final Runnable updateProgressTick = new Runnable() {
+        @Override
+        public void run() {
+            pollUpdateDownloadProgress();
+        }
+    };
 
     private final PhoneStateListener phoneStateListener = new PhoneStateListener() {
         @Override
@@ -114,6 +136,7 @@ public final class MainActivity extends Activity {
         updateDialerInfo();
         updatePolicyInfo();
         render();
+        checkForUpdatesSilently();
         handler.post(tick);
     }
 
@@ -131,6 +154,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         leavingForPhone = false;
         leavingForSettings = false;
+        leavingForUpdateInstall = false;
         plannedBackgroundExit = false;
         restoreSession();
         if (session.snapshot(System.currentTimeMillis()).phase() == FocusPhase.WORKING) {
@@ -189,6 +213,7 @@ public final class MainActivity extends Activity {
         chanceText = text("临时退出机会：3 次", 14, PEACH, false);
         dialerText = text("正在检测拨号器…", 12, MUTED, false);
         policyText = text("勿扰权限未检测", 12, MUTED, false);
+        updateText = text("更新：启动时会静默检查", 12, MUTED, false);
 
         LinearLayout timerCard = new LinearLayout(this);
         timerCard.setOrientation(LinearLayout.VERTICAL);
@@ -214,6 +239,12 @@ public final class MainActivity extends Activity {
         dial.setOnClickListener(view -> openDialer());
         Button dnd = button("设置勿扰/电话例外");
         dnd.setOnClickListener(view -> configureDoNotDisturb());
+        updateDownloadButton = button("下载更新");
+        updateDownloadButton.setEnabled(false);
+        updateDownloadButton.setOnClickListener(view -> startUpdateDownload(false));
+        updateAccelerateButton = button("切换加速下载");
+        updateAccelerateButton.setEnabled(false);
+        updateAccelerateButton.setOnClickListener(view -> startUpdateDownload(true));
 
         card.addView(title);
         card.addView(subtitle);
@@ -232,11 +263,16 @@ public final class MainActivity extends Activity {
         card.addView(dial, fullWidth());
         card.addView(spacer(8));
         card.addView(dnd, fullWidth());
+        card.addView(spacer(8));
+        card.addView(updateDownloadButton, fullWidth());
+        card.addView(spacer(8));
+        card.addView(updateAccelerateButton, fullWidth());
         card.addView(spacer(14));
         card.addView(hintText);
         card.addView(chanceText);
         card.addView(dialerText);
         card.addView(policyText);
+        card.addView(updateText);
         return scrollView;
     }
 
@@ -398,6 +434,161 @@ public final class MainActivity extends Activity {
         dialerText.setText(builder.toString());
     }
 
+    private void checkForUpdatesSilently() {
+        if (updateCheckStarted) {
+            return;
+        }
+        updateCheckStarted = true;
+        new Thread(() -> {
+            try {
+                UpdateInfo info = UpdateChecker.checkLatest(UpdateChecker.PLATFORM_ANDROID);
+                handler.post(() -> onUpdateChecked(info));
+            } catch (Exception ignored) {
+                handler.post(() -> updateText.setText("更新：静默检查失败，可稍后重启应用再试"));
+            }
+        }, "FocuSeed-UpdateCheck").start();
+    }
+
+    private void onUpdateChecked(UpdateInfo info) {
+        if (!info.updateAvailable()) {
+            updateText.setText("更新：已是最新版 v" + info.currentVersion());
+            return;
+        }
+        pendingUpdate = info;
+        updateDownloadButton.setEnabled(true);
+        updateAccelerateButton.setEnabled(true);
+        updateText.setText("发现新版本 v" + info.latestVersion() + "：" + info.assetName());
+        new AlertDialog.Builder(this)
+            .setTitle("发现 FocuSeed 新版本")
+            .setMessage("当前 v" + info.currentVersion() + "，最新 v" + info.latestVersion() + "。默认会从 GitHub 原地址下载到系统下载目录；如果卡住，可手动切换 ghfast 加速。")
+            .setPositiveButton("下载更新", (dialog, which) -> startUpdateDownload(false))
+            .setNegativeButton("稍后", null)
+            .setNeutralButton("加速下载", (dialog, which) -> startUpdateDownload(true))
+            .show();
+    }
+
+    private void startUpdateDownload(boolean accelerated) {
+        if (pendingUpdate == null || pendingUpdate.downloadUrl().trim().isEmpty()) {
+            Toast.makeText(this, "暂时没有可下载的更新。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (manager == null) {
+            Toast.makeText(this, "系统下载管理器不可用。", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (updateDownloadId != NO_DOWNLOAD) {
+            manager.remove(updateDownloadId);
+            updateDownloadId = NO_DOWNLOAD;
+        }
+
+        String url = accelerated ? UpdateChecker.acceleratedUrl(pendingUpdate.downloadUrl()) : pendingUpdate.downloadUrl();
+        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+        request.setTitle("FocuSeed v" + pendingUpdate.latestVersion());
+        request.setDescription(accelerated ? "正在通过 ghfast 加速下载更新" : "正在通过 GitHub 原地址下载更新");
+        request.setMimeType("application/vnd.android.package-archive");
+        request.setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI | DownloadManager.Request.NETWORK_MOBILE);
+        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, pendingUpdate.assetName());
+
+        updateInstallPrompted = false;
+        updateDownloadId = manager.enqueue(request);
+        updateDownloadButton.setEnabled(true);
+        updateAccelerateButton.setEnabled(true);
+        updateText.setText(accelerated ? "更新：已切换 ghfast 加速，准备下载…" : "更新：正在从 GitHub 原地址下载…");
+        handler.removeCallbacks(updateProgressTick);
+        handler.post(updateProgressTick);
+    }
+
+    private void pollUpdateDownloadProgress() {
+        if (updateDownloadId == NO_DOWNLOAD) {
+            return;
+        }
+        DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (manager == null) {
+            return;
+        }
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(updateDownloadId);
+        try (Cursor cursor = manager.query(query)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                updateText.setText("更新：下载任务已离开队列");
+                updateDownloadId = NO_DOWNLOAD;
+                return;
+            }
+            int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            long downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+            long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+            if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                updateText.setText("更新：下载完成，文件已在 Download/" + pendingUpdate.assetName());
+                promptInstallDownloadedUpdate(manager);
+                updateDownloadId = NO_DOWNLOAD;
+                return;
+            }
+            if (status == DownloadManager.STATUS_FAILED) {
+                updateText.setText("更新：下载失败，可点“切换加速下载”重试");
+                updateDownloadId = NO_DOWNLOAD;
+                return;
+            }
+            if (total > 0L) {
+                int percent = (int) Math.min(100L, downloaded * 100L / total);
+                updateText.setText("更新下载进度：" + percent + "%（" + readableBytes(downloaded) + " / " + readableBytes(total) + "）");
+            } else {
+                updateText.setText("更新：正在下载 " + readableBytes(downloaded) + "，如卡住可切换加速");
+            }
+        }
+        handler.postDelayed(updateProgressTick, 800L);
+    }
+
+    private void promptInstallDownloadedUpdate(DownloadManager manager) {
+        if (updateInstallPrompted) {
+            return;
+        }
+        Uri apkUri = manager.getUriForDownloadedFile(updateDownloadId);
+        if (apkUri == null) {
+            return;
+        }
+        updateInstallPrompted = true;
+        new AlertDialog.Builder(this)
+            .setTitle("更新已下载")
+            .setMessage("安装包已保存到系统下载目录。FocuSeed 从本版开始使用固定签名，后续同包名可直接覆盖更新。")
+            .setPositiveButton("打开安装", (dialog, which) -> openDownloadedUpdate(apkUri))
+            .setNegativeButton("稍后", null)
+            .show();
+    }
+
+    private void openDownloadedUpdate(Uri apkUri) {
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            leavingForUpdateInstall = true;
+            Intent settingsIntent = new Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + getPackageName())
+            );
+            startActivity(settingsIntent);
+            Toast.makeText(this, "请先允许 FocuSeed 安装下载的更新包，然后回到应用再次打开安装。", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            leavingForUpdateInstall = true;
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法打开安装器，请到系统下载目录手动安装。", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String readableBytes(long bytes) {
+        if (bytes < 1024L) {
+            return bytes + " B";
+        }
+        double kib = bytes / 1024.0;
+        if (kib < 1024.0) {
+            return String.format(java.util.Locale.ROOT, "%.1f KiB", kib);
+        }
+        return String.format(java.util.Locale.ROOT, "%.1f MiB", kib / 1024.0);
+    }
+
     private void configureDoNotDisturb() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) {
@@ -489,7 +680,7 @@ public final class MainActivity extends Activity {
         if (phase != FocusPhase.WORKING) {
             return;
         }
-        if (leavingForPhone || leavingForSettings) {
+        if (leavingForPhone || leavingForSettings || leavingForUpdateInstall) {
             saveSession(true);
             return;
         }

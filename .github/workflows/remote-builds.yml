@@ -19,6 +19,7 @@ env:
   APP_VERSION: 0.1.1
   GRADLE_VERSION: 8.10.2
   MAIN_CLASS: io.github.dai2010.focuseed.desktop.FocuSeedDesktop
+  WINDOWS_UPGRADE_UUID: 2d6f047e-638e-4c9f-9d93-8ae315a51efb
 
 jobs:
   android:
@@ -45,15 +46,31 @@ jobs:
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Build Android debug APK
-        run: gradle :androidApp:assembleDebug --stacktrace
+      - name: Restore Android release signing key
+        env:
+          FOCUSEED_ANDROID_KEYSTORE_BASE64: ${{ secrets.FOCUSEED_ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOCUSEED_ANDROID_KEYSTORE_BASE64"
+          mkdir -p "$RUNNER_TEMP/focuseed-signing"
+          echo "$FOCUSEED_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/focuseed-signing/focuseed-release.p12"
+
+      - name: Build Android signed release APK
+        env:
+          FOCUSEED_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/focuseed-signing/focuseed-release.p12
+          FOCUSEED_ANDROID_KEYSTORE_TYPE: pkcs12
+          FOCUSEED_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FOCUSEED_ANDROID_KEYSTORE_PASSWORD }}
+          FOCUSEED_ANDROID_KEY_ALIAS: ${{ secrets.FOCUSEED_ANDROID_KEY_ALIAS }}
+          FOCUSEED_ANDROID_KEY_PASSWORD: ${{ secrets.FOCUSEED_ANDROID_KEY_PASSWORD }}
+        run: gradle :androidApp:assembleRelease --stacktrace
 
       - name: Prepare Android artifact
         shell: bash
         run: |
           mkdir -p dist/android
-          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk \
-            "dist/android/${APP_NAME}-v${APP_VERSION}-android-debug.apk"
+          cp androidApp/build/outputs/apk/release/androidApp-release.apk \
+            "dist/android/${APP_NAME}-v${APP_VERSION}-android.apk"
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
@@ -205,6 +222,7 @@ jobs:
             --input desktopApp/build/install/focuseed/lib `
             --main-jar $mainJar.Name `
             --main-class $env:MAIN_CLASS `
+            --win-upgrade-uuid $env:WINDOWS_UPGRADE_UUID `
             --win-menu `
             --win-shortcut `
             --dest dist/windows/native
@@ -220,6 +238,7 @@ jobs:
             --input desktopApp/build/install/focuseed/lib `
             --main-jar $mainJar.Name `
             --main-class $env:MAIN_CLASS `
+            --win-upgrade-uuid $env:WINDOWS_UPGRADE_UUID `
             --win-menu `
             --win-shortcut `
             --dest dist/windows/native
@@ -258,6 +277,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release delete "${GITHUB_REF_NAME}" --yes
+          fi
           mapfile -t release_files < <(find release-artifacts -type f | sort)
           notes_file="docs/releases/${GITHUB_REF_NAME}.md"
           if [[ ! -f "$notes_file" ]]; then
