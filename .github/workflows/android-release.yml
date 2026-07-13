@@ -1,0 +1,87 @@
+name: Android Fix Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*-Android-*'
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: FocuSeed
+  GRADLE_VERSION: 8.10.2
+
+jobs:
+  android:
+    name: Android APK only
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Restore Android release signing key
+        env:
+          FOCUSEED_ANDROID_KEYSTORE_BASE64: ${{ secrets.FOCUSEED_ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FOCUSEED_ANDROID_KEYSTORE_BASE64"
+          mkdir -p "$RUNNER_TEMP/focuseed-signing"
+          echo "$FOCUSEED_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/focuseed-signing/focuseed-release.p12"
+
+      - name: Build Android signed release APK
+        env:
+          FOCUSEED_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/focuseed-signing/focuseed-release.p12
+          FOCUSEED_ANDROID_KEYSTORE_TYPE: pkcs12
+          FOCUSEED_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FOCUSEED_ANDROID_KEYSTORE_PASSWORD }}
+          FOCUSEED_ANDROID_KEY_ALIAS: ${{ secrets.FOCUSEED_ANDROID_KEY_ALIAS }}
+          FOCUSEED_ANDROID_KEY_PASSWORD: ${{ secrets.FOCUSEED_ANDROID_KEY_PASSWORD }}
+        run: gradle :androidApp:assembleRelease --stacktrace
+
+      - name: Prepare Android artifact
+        shell: bash
+        run: |
+          mkdir -p dist/android
+          cp androidApp/build/outputs/apk/release/androidApp-release.apk \
+            "dist/android/${APP_NAME}-v${APP_VERSION}-android.apk"
+
+      - name: Publish Android release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            notes_file="docs/releases/v0.1.2-Android-fix1.md"
+          fi
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release delete "${GITHUB_REF_NAME}" --yes
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "FocuSeed ${GITHUB_REF_NAME} Android fix" \
+            --notes-file "$notes_file" \
+            dist/android/*.apk

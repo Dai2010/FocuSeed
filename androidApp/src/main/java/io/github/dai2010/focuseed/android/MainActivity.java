@@ -3,14 +3,13 @@ package io.github.dai2010.focuseed.android;
 import android.Manifest;
 import android.app.Activity;
 import android.app.ActivityManager;
-import android.app.AlarmManager;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.Cursor;
@@ -144,6 +143,7 @@ public final class MainActivity extends Activity {
         cuteTypeface = Typeface.createFromAsset(getAssets(), "fonts/ZCOOLKuaiLe-Regular.ttf");
         restoreSession();
         setContentView(createLayout());
+        FocusGuardService.startIfSessionRunning(this);
         if (ACTION_FORCE_FOCUS.equals(getIntent().getAction())) {
             applyFocusWindowMode();
         }
@@ -162,6 +162,9 @@ public final class MainActivity extends Activity {
         setIntent(intent);
         restoreSession();
         backgroundExitHandled = false;
+        FocusGuardService.markActivityVisible(this, true);
+        FocusGuardService.clearBackgroundAllowance(this);
+        FocusGuardService.startIfSessionRunning(this);
         applyFocusWindowMode();
         render();
     }
@@ -175,11 +178,13 @@ public final class MainActivity extends Activity {
         leavingForUpdateInstall = false;
         plannedBackgroundExit = false;
         backgroundExitHandled = false;
+        FocusGuardService.markActivityVisible(this, true);
+        FocusGuardService.clearBackgroundAllowance(this);
         restoreSession();
         if (session.snapshot(System.currentTimeMillis()).phase() == FocusPhase.WORKING) {
-            cancelWorkAlarm();
             applyFocusWindowMode();
         }
+        FocusGuardService.startIfSessionRunning(this);
         updateDialerInfo();
         updatePolicyInfo();
         render();
@@ -189,6 +194,8 @@ public final class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         activityResumed = false;
+        FocusGuardService.markActivityVisible(this, false);
+        FocusGuardService.startIfSessionRunning(this);
         handleUnexpectedBackgroundExit();
     }
 
@@ -207,6 +214,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        FocusGuardService.markActivityVisible(this, false);
         super.onDestroy();
     }
 
@@ -288,6 +296,8 @@ public final class MainActivity extends Activity {
         dial.setOnClickListener(view -> openDialer());
         Button dnd = button("设置勿扰/电话例外");
         dnd.setOnClickListener(view -> configureDoNotDisturb());
+        Button fullScreenIntent = button("设置全屏拉回权限");
+        fullScreenIntent.setOnClickListener(view -> configureFullScreenIntent());
         updateDownloadButton = button("下载更新");
         updateDownloadButton.setEnabled(false);
         updateDownloadButton.setOnClickListener(view -> startUpdateDownload(false));
@@ -315,6 +325,8 @@ public final class MainActivity extends Activity {
         menuPanel.addView(dial, fullWidth());
         menuPanel.addView(spacer(8));
         menuPanel.addView(dnd, fullWidth());
+        menuPanel.addView(spacer(8));
+        menuPanel.addView(fullScreenIntent, fullWidth());
         menuPanel.addView(spacer(8));
         menuPanel.addView(updateDownloadButton, fullWidth());
         menuPanel.addView(spacer(8));
@@ -418,7 +430,9 @@ public final class MainActivity extends Activity {
         FocusSettings settings = new FocusSettings(currentWorkMinutes, currentBreakMinutes, currentRounds);
         session.start(settings, sessionStartedAtMillis);
         saveSession(true);
-        cancelWorkAlarm();
+        FocusGuardService.markActivityVisible(this, true);
+        FocusGuardService.clearBackgroundAllowance(this);
+        FocusGuardService.start(this);
         applyFocusWindowMode();
         configureDoNotDisturbIfAllowed();
         render();
@@ -446,7 +460,6 @@ public final class MainActivity extends Activity {
         }
         if (phase == FocusPhase.FINISHED) {
             clearSession();
-            cancelWorkAlarm();
             phaseText.setText("花开完成啦 (*´▽`*)");
             timerText.setText("00:00");
             roundText.setText("轮次 " + snapshot.roundText());
@@ -472,12 +485,17 @@ public final class MainActivity extends Activity {
         FocusPhase phase = snapshot.phase();
         if (phase == FocusPhase.IDLE || phase == FocusPhase.FINISHED) {
             stopFocusLockTaskIfActive();
+            FocusGuardService.stop(this);
             finish();
             return;
         }
         if (phase == FocusPhase.BREAK) {
             stopFocusLockTaskIfActive();
-            scheduleFocusAlarm(System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis()));
+            FocusGuardService.allowBackgroundUntil(
+                this,
+                System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis()),
+                FocusGuardService.REASON_BREAK
+            );
             Toast.makeText(this, "休息小窝开启，下一段工作会自动回到全屏 (´･ω･`)", Toast.LENGTH_LONG).show();
             plannedBackgroundExit = true;
             moveTaskToBack(true);
@@ -491,7 +509,7 @@ public final class MainActivity extends Activity {
         exitChancesLeft--;
         saveSession(true);
         stopFocusLockTaskIfActive();
-        scheduleFocusReturn(WORK_EXIT_RETURN_DELAY_MILLIS);
+        FocusGuardService.requestReturn(this, System.currentTimeMillis() + WORK_EXIT_RETURN_DELAY_MILLIS);
         Toast.makeText(this, "临时退出机会剩余 " + exitChancesLeft + " 次，马上会回到全屏 (ง •_•)ง", Toast.LENGTH_LONG).show();
         plannedBackgroundExit = true;
         moveTaskToBack(true);
@@ -500,6 +518,7 @@ public final class MainActivity extends Activity {
     private void openDialer() {
         leavingForPhone = true;
         stopFocusLockTaskIfActive();
+        FocusGuardService.allowPhone(this);
         Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:"));
         startActivity(intent);
     }
@@ -523,12 +542,23 @@ public final class MainActivity extends Activity {
         updateCheckStarted = true;
         new Thread(() -> {
             try {
-                UpdateInfo info = UpdateChecker.checkLatest(UpdateChecker.PLATFORM_ANDROID);
+                UpdateInfo info = UpdateChecker.checkLatest(UpdateChecker.PLATFORM_ANDROID, appVersionName());
                 handler.post(() -> onUpdateChecked(info));
             } catch (Exception ignored) {
                 handler.post(() -> updateText.setText("更新：静默检查失败，可稍后重启应用再试"));
             }
         }, "FocuSeed-UpdateCheck").start();
+    }
+
+    private String appVersionName() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (info.versionName != null && !info.versionName.trim().isEmpty()) {
+                return info.versionName;
+            }
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        return UpdateChecker.CURRENT_VERSION;
     }
 
     private void onUpdateChecked(UpdateInfo info) {
@@ -642,6 +672,7 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
             leavingForUpdateInstall = true;
             stopFocusLockTaskIfActive();
+            FocusGuardService.allowExternal(this, FocusGuardService.REASON_UPDATE);
             Intent settingsIntent = new Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:" + getPackageName())
@@ -656,6 +687,7 @@ public final class MainActivity extends Activity {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             leavingForUpdateInstall = true;
             stopFocusLockTaskIfActive();
+            FocusGuardService.allowExternal(this, FocusGuardService.REASON_UPDATE);
             startActivity(intent);
         } catch (Exception error) {
             Toast.makeText(this, "无法打开安装器，请到系统下载目录手动安装。", Toast.LENGTH_LONG).show();
@@ -681,6 +713,7 @@ public final class MainActivity extends Activity {
         if (!manager.isNotificationPolicyAccessGranted()) {
             leavingForSettings = true;
             stopFocusLockTaskIfActive();
+            FocusGuardService.allowExternal(this, FocusGuardService.REASON_SETTINGS);
             startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
             return;
         }
@@ -705,7 +738,14 @@ public final class MainActivity extends Activity {
     private void updatePolicyInfo() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         boolean granted = manager != null && manager.isNotificationPolicyAccessGranted();
-        policyText.setText(granted ? "勿扰权限：已授权，可保留电话例外" : "勿扰权限：未授权，需要用户在系统设置中开启");
+        String fullScreenStatus = "";
+        if (Build.VERSION.SDK_INT >= 34 && manager != null) {
+            fullScreenStatus = manager.canUseFullScreenIntent() ? " · 全屏拉回：已允许" : " · 全屏拉回：未允许";
+        }
+        policyText.setText(
+            (granted ? "勿扰权限：已授权，可保留电话例外" : "勿扰权限：未授权，需要用户在系统设置中开启")
+                + fullScreenStatus
+        );
     }
 
     private void registerCallStateListenerIfAllowed() {
@@ -743,15 +783,45 @@ public final class MainActivity extends Activity {
 
     private void promptNotificationPolicyIfNeeded() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager == null || manager.isNotificationPolicyAccessGranted()) {
+        if (manager == null) {
+            return;
+        }
+        if (manager.isNotificationPolicyAccessGranted()) {
+            promptFullScreenIntentIfNeeded();
             return;
         }
         new AlertDialog.Builder(this)
             .setTitle("首次权限检测")
             .setMessage("FocuSeed 需要勿扰访问来屏蔽通知并保留电话。这个引导只在首次运行自动出现；以后可从左上角菜单手动打开。")
             .setPositiveButton("去设置", (dialog, which) -> configureDoNotDisturb())
+            .setNegativeButton("稍后", (dialog, which) -> promptFullScreenIntentIfNeeded())
+            .show();
+    }
+
+    private void promptFullScreenIntentIfNeeded() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT < 34 || manager == null || manager.canUseFullScreenIntent()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("首次权限检测")
+            .setMessage("Android 14 及以上需要允许全屏通知，FocuSeed 才能在工作期被手势切走后更稳定地拉回全屏。")
+            .setPositiveButton("去设置", (dialog, which) -> configureFullScreenIntent())
             .setNegativeButton("稍后", null)
             .show();
+    }
+
+    private void configureFullScreenIntent() {
+        if (Build.VERSION.SDK_INT < 34) {
+            Toast.makeText(this, "当前系统无需单独设置全屏通知权限。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        leavingForSettings = true;
+        stopFocusLockTaskIfActive();
+        FocusGuardService.allowExternal(this, FocusGuardService.REASON_SETTINGS);
+        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+        intent.setData(Uri.parse("package:" + getPackageName()));
+        startActivity(intent);
     }
 
     private void applyFocusWindowMode() {
@@ -842,7 +912,11 @@ public final class MainActivity extends Activity {
         FocusPhase phase = snapshot.phase();
         if (phase == FocusPhase.BREAK) {
             saveSession(true);
-            scheduleFocusAlarm(System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis()));
+            FocusGuardService.allowBackgroundUntil(
+                this,
+                System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis()),
+                FocusGuardService.REASON_BREAK
+            );
             return;
         }
         if (phase != FocusPhase.WORKING) {
@@ -855,62 +929,11 @@ public final class MainActivity extends Activity {
         if (exitChancesLeft > 0) {
             exitChancesLeft--;
             saveSession(true);
-            scheduleFocusReturn(WORK_EXIT_RETURN_DELAY_MILLIS);
+            FocusGuardService.requestReturn(this, System.currentTimeMillis() + WORK_EXIT_RETURN_DELAY_MILLIS);
             return;
         }
         saveSession(true);
-        scheduleFocusReturn(FORCED_RETURN_DELAY_MILLIS);
-    }
-
-    private void scheduleFocusReturn(long delayMillis) {
-        long safeDelay = Math.max(FORCED_RETURN_DELAY_MILLIS, delayMillis);
-        scheduleFocusAlarm(System.currentTimeMillis() + safeDelay);
-        handler.postDelayed(() -> {
-            FocusSnapshot snapshot = session.snapshot(System.currentTimeMillis());
-            if (snapshot.phase() != FocusPhase.WORKING || leavingForPhone || leavingForSettings || leavingForUpdateInstall) {
-                return;
-            }
-            try {
-                startActivity(focusIntent());
-            } catch (RuntimeException ignored) {
-            }
-        }, safeDelay);
-    }
-
-    private void scheduleFocusAlarm(long triggerAtMillis) {
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager == null) {
-            return;
-        }
-        PendingIntent pendingIntent = focusPendingIntent();
-        long safeTrigger = Math.max(System.currentTimeMillis() + 1_000L, triggerAtMillis);
-        alarmManager.setAlarmClock(new AlarmManager.AlarmClockInfo(safeTrigger, pendingIntent), pendingIntent);
-    }
-
-    private void cancelWorkAlarm() {
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            alarmManager.cancel(focusPendingIntent());
-        }
-    }
-
-    private PendingIntent focusPendingIntent() {
-        return PendingIntent.getActivity(this, 1001, focusIntent(), pendingIntentFlags());
-    }
-
-    private Intent focusIntent() {
-        Intent intent = new Intent(this, MainActivity.class);
-        intent.setAction(ACTION_FORCE_FOCUS);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        return intent;
-    }
-
-    private int pendingIntentFlags() {
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) {
-            flags |= PendingIntent.FLAG_IMMUTABLE;
-        }
-        return flags;
+        FocusGuardService.requestReturn(this, System.currentTimeMillis() + FORCED_RETURN_DELAY_MILLIS);
     }
 
     private void restoreSession() {
@@ -947,6 +970,7 @@ public final class MainActivity extends Activity {
         exitChancesLeft = EXIT_CHANCES;
         sessionStartedAtMillis = 0L;
         saveSession(false);
+        FocusGuardService.stop(this);
     }
 
     private LinearLayout.LayoutParams fullWidth() {

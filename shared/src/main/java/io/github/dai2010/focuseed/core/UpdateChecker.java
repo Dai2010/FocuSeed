@@ -31,13 +31,18 @@ public final class UpdateChecker {
     }
 
     public static UpdateInfo checkLatest(String assetKey) throws IOException {
-        String json = readUrl(LATEST_RELEASE_API);
-        String latestVersion = normalizeVersion(firstMatch(TAG_PATTERN, json, CURRENT_VERSION));
+        return checkLatest(assetKey, CURRENT_VERSION);
+    }
+
+    public static UpdateInfo checkLatest(String assetKey, String currentVersion) throws IOException {
+        String safeCurrentVersion = normalizeVersion(currentVersion == null || currentVersion.trim().isEmpty() ? CURRENT_VERSION : currentVersion);
+        String json = readUrl(LATEST_RELEASE_API, safeCurrentVersion);
+        String latestVersion = normalizeVersion(firstMatch(TAG_PATTERN, json, safeCurrentVersion));
         String releasePageUrl = firstMatch(HTML_URL_PATTERN, json, "https://github.com/Dai2010/FocuSeed/releases/latest");
         Asset asset = selectAsset(parseAssets(json), assetKey);
-        boolean available = compareVersions(latestVersion, CURRENT_VERSION) > 0 && asset != null;
+        boolean available = compareVersions(latestVersion, safeCurrentVersion) > 0 && asset != null;
         return new UpdateInfo(
-            CURRENT_VERSION,
+            safeCurrentVersion,
             latestVersion,
             available,
             asset == null ? "" : asset.name,
@@ -83,12 +88,12 @@ public final class UpdateChecker {
         return normalized;
     }
 
-    private static String readUrl(String address) throws IOException {
+    private static String readUrl(String address, String currentVersion) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
         connection.setConnectTimeout(8_000);
         connection.setReadTimeout(8_000);
         connection.setRequestProperty("Accept", "application/vnd.github+json");
-        connection.setRequestProperty("User-Agent", "FocuSeed/" + CURRENT_VERSION);
+        connection.setRequestProperty("User-Agent", "FocuSeed/" + currentVersion);
         try (InputStream stream = connection.getInputStream();
              BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             StringBuilder builder = new StringBuilder();
@@ -196,12 +201,15 @@ public final class UpdateChecker {
 
     private static int parseLeadingInt(String value) {
         int result = 0;
+        boolean foundDigit = false;
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);
-            if (!Character.isDigit(character)) {
+            if (Character.isDigit(character)) {
+                foundDigit = true;
+                result = result * 10 + Character.digit(character, 10);
+            } else if (foundDigit) {
                 break;
             }
-            result = result * 10 + Character.digit(character, 10);
         }
         return result;
     }
