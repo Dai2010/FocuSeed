@@ -1,0 +1,22 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Kotlin / Gradle / Android
+.gradle/
+build/
+**/build/
+local.properties
+*.iml
+
+# Generated packages
+*.apk
+*.aab
+*.msi
+*.deb
+*.rpm

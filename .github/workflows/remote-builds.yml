@@ -1,0 +1,118 @@
+name: Remote Builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare remote build
+    runs-on: ubuntu-latest
+    outputs:
+      has_gradle: ${{ steps.detect.outputs.has_gradle }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect project skeleton
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f ./gradlew && -f ./settings.gradle.kts ]]; then
+            echo "has_gradle=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_gradle=false" >> "$GITHUB_OUTPUT"
+            echo "Gradle project skeleton is not present yet; build jobs will be skipped."
+          fi
+
+  android:
+    name: Android debug APK
+    needs: prepare
+    if: needs.prepare.outputs.has_gradle == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android debug APK
+        run: ./gradlew :androidApp:assembleDebug --stacktrace
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: androidApp/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+  linux:
+    name: Linux desktop package
+    needs: prepare
+    if: needs.prepare.outputs.has_gradle == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Linux desktop package
+        run: ./gradlew :desktopApp:packageDistributionForCurrentOS --stacktrace
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop-package
+          path: desktopApp/build/compose/binaries/main/**/*
+          if-no-files-found: warn
+
+  windows:
+    name: Windows desktop package
+    needs: prepare
+    if: needs.prepare.outputs.has_gradle == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Windows desktop package
+        run: ./gradlew.bat :desktopApp:packageDistributionForCurrentOS --stacktrace
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-package
+          path: desktopApp/build/compose/binaries/main/**/*
+          if-no-files-found: warn
