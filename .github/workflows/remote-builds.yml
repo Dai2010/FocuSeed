@@ -1,42 +1,28 @@
-name: Remote Builds
+name: Remote Builds and Release
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
 
 permissions:
-  contents: read
+  contents: write
+
+env:
+  APP_NAME: FocuSeed
+  APP_VERSION: 0.1.0
+  GRADLE_VERSION: 8.10.2
+  MAIN_CLASS: io.github.dai2010.focuseed.desktop.FocuSeedDesktop
 
 jobs:
-  prepare:
-    name: Prepare remote build
-    runs-on: ubuntu-latest
-    outputs:
-      has_gradle: ${{ steps.detect.outputs.has_gradle }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect project skeleton
-        id: detect
-        shell: bash
-        run: |
-          if [[ -f ./gradlew && -f ./settings.gradle.kts ]]; then
-            echo "has_gradle=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_gradle=false" >> "$GITHUB_OUTPUT"
-            echo "Gradle project skeleton is not present yet; build jobs will be skipped."
-          fi
-
   android:
-    name: Android debug APK
-    needs: prepare
-    if: needs.prepare.outputs.has_gradle == 'true'
+    name: Android APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,27 +34,44 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: Build Android debug APK
-        run: ./gradlew :androidApp:assembleDebug --stacktrace
+        run: gradle :androidApp:assembleDebug --stacktrace
 
-      - name: Upload Android artifacts
+      - name: Prepare Android artifact
+        shell: bash
+        run: |
+          mkdir -p dist/android
+          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk \
+            "dist/android/${APP_NAME}-v${APP_VERSION}-android-debug.apk"
+
+      - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-debug-apk
-          path: androidApp/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          name: android-apk
+          path: dist/android/*.apk
 
   linux:
-    name: Linux desktop package
-    needs: prepare
-    if: needs.prepare.outputs.has_gradle == 'true'
+    name: Linux DEB DPKG RPM Arch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot rpm zstd
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -78,26 +81,94 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Build Linux desktop package
-        run: ./gradlew :desktopApp:packageDistributionForCurrentOS --stacktrace
+      - name: Build desktop distribution
+        run: gradle :desktopApp:installDist --stacktrace
+
+      - name: Build Linux installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux/native dist/linux/renamed
+          main_jar="$(basename "$(find desktopApp/build/install/focuseed/lib -maxdepth 1 -name 'desktopApp-*.jar' | head -n 1)")"
+
+          jpackage \
+            --type deb \
+            --name "$APP_NAME" \
+            --app-version "$APP_VERSION" \
+            --vendor "Dai2010" \
+            --description "Strict Pomodoro focus timer" \
+            --license-file LICENSE \
+            --input desktopApp/build/install/focuseed/lib \
+            --main-jar "$main_jar" \
+            --main-class "$MAIN_CLASS" \
+            --linux-shortcut \
+            --linux-menu-group Utility \
+            --dest dist/linux/native
+
+          jpackage \
+            --type rpm \
+            --name "$APP_NAME" \
+            --app-version "$APP_VERSION" \
+            --vendor "Dai2010" \
+            --description "Strict Pomodoro focus timer" \
+            --license-file LICENSE \
+            --input desktopApp/build/install/focuseed/lib \
+            --main-jar "$main_jar" \
+            --main-class "$MAIN_CLASS" \
+            --linux-shortcut \
+            --linux-menu-group Utility \
+            --dest dist/linux/native
+
+          cp "$(find dist/linux/native -maxdepth 1 -name '*.deb' | head -n 1)" \
+            "dist/linux/renamed/${APP_NAME}-v${APP_VERSION}-linux.deb"
+          cp "dist/linux/renamed/${APP_NAME}-v${APP_VERSION}-linux.deb" \
+            "dist/linux/renamed/${APP_NAME}-v${APP_VERSION}-linux.dpkg"
+          cp "$(find dist/linux/native -maxdepth 1 -name '*.rpm' | head -n 1)" \
+            "dist/linux/renamed/${APP_NAME}-v${APP_VERSION}-linux.rpm"
+
+      - name: Build Arch Linux package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x packaging/archlinux/create-package.sh
+          packaging/archlinux/create-package.sh \
+            desktopApp/build/install/focuseed \
+            dist/linux/renamed \
+            "$APP_VERSION" \
+            1
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-desktop-package
-          path: desktopApp/build/compose/binaries/main/**/*
-          if-no-files-found: warn
+          name: linux-packages
+          path: |
+            dist/linux/renamed/*.deb
+            dist/linux/renamed/*.dpkg
+            dist/linux/renamed/*.rpm
+            dist/linux/renamed/*.pkg.tar.zst
 
   windows:
-    name: Windows desktop package
-    needs: prepare
-    if: needs.prepare.outputs.has_gradle == 'true'
+    name: Windows EXE MSI
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install WiX Toolset
+        shell: powershell
+        run: |
+          choco install wixtoolset --no-progress -y
+          $wixBin = Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'WiX Toolset*' |
+            Sort-Object Name -Descending |
+            Select-Object -First 1 |
+            ForEach-Object { Join-Path $_.FullName 'bin' }
+          if ($wixBin) {
+            Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+          }
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -106,13 +177,84 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Build Windows desktop package
-        run: ./gradlew.bat :desktopApp:packageDistributionForCurrentOS --stacktrace
+      - name: Build desktop distribution
+        run: gradle :desktopApp:installDist --stacktrace
+
+      - name: Build Windows installers
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path dist/windows/native | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/windows/renamed | Out-Null
+          $mainJar = Get-ChildItem desktopApp/build/install/focuseed/lib -Filter 'desktopApp-*.jar' | Select-Object -First 1
+
+          jpackage `
+            --type exe `
+            --name $env:APP_NAME `
+            --app-version $env:APP_VERSION `
+            --vendor Dai2010 `
+            --description 'Strict Pomodoro focus timer' `
+            --license-file LICENSE `
+            --input desktopApp/build/install/focuseed/lib `
+            --main-jar $mainJar.Name `
+            --main-class $env:MAIN_CLASS `
+            --win-menu `
+            --win-shortcut `
+            --dest dist/windows/native
+
+          jpackage `
+            --type msi `
+            --name $env:APP_NAME `
+            --app-version $env:APP_VERSION `
+            --vendor Dai2010 `
+            --description 'Strict Pomodoro focus timer' `
+            --license-file LICENSE `
+            --input desktopApp/build/install/focuseed/lib `
+            --main-jar $mainJar.Name `
+            --main-class $env:MAIN_CLASS `
+            --win-menu `
+            --win-shortcut `
+            --dest dist/windows/native
+
+          Copy-Item (Get-ChildItem dist/windows/native -Filter '*.exe' | Select-Object -First 1).FullName "dist/windows/renamed/$env:APP_NAME-v$env:APP_VERSION-windows.exe"
+          Copy-Item (Get-ChildItem dist/windows/native -Filter '*.msi' | Select-Object -First 1).FullName "dist/windows/renamed/$env:APP_NAME-v$env:APP_VERSION-windows.msi"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-desktop-package
-          path: desktopApp/build/compose/binaries/main/**/*
-          if-no-files-found: warn
+          name: windows-installers
+          path: |
+            dist/windows/renamed/*.exe
+            dist/windows/renamed/*.msi
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - android
+      - linux
+      - windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t release_files < <(find release-artifacts -type f | sort)
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "FocuSeed ${GITHUB_REF_NAME}" \
+            --notes-file docs/releases/v0.1.0.md \
+            "${release_files[@]}"

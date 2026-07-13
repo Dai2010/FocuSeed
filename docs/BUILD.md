@@ -19,10 +19,14 @@
 
 ## 远端构建入口
 
-`.github/workflows/remote-builds.yml` 是远端构建入口。当前 workflow 面向后续 Kotlin/Compose Multiplatform 项目骨架设计：
+`.github/workflows/remote-builds.yml` 是远端构建和发布入口：
 
-- Android debug APK。
-- Linux 桌面包。
-- Windows 桌面包。
+- Android debug APK：`FocuSeed-v0.1.0-android-debug.apk`。
+- Linux DEB：`FocuSeed-v0.1.0-linux.deb`。
+- Linux DPKG 命名包：`FocuSeed-v0.1.0-linux.dpkg`。
+- Linux RPM：`FocuSeed-v0.1.0-linux.rpm`。
+- Arch Linux：`focuseed-0.1.0-1-x86_64.pkg.tar.zst`。
+- Windows EXE：`FocuSeed-v0.1.0-windows.exe`。
+- Windows MSI：`FocuSeed-v0.1.0-windows.msi`。
 
-在 Gradle 项目骨架加入之前，workflow 可以手动触发但不会在本地执行任何编译。
+推送 `v0.1.0` tag 时，workflow 会把这些产物发布到 GitHub Release，并使用 `docs/releases/v0.1.0.md` 作为发布介绍。

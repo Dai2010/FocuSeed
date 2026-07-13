@@ -30,12 +30,6 @@ FocuSeed 会尽量使用系统公开 API 实现强制专注，但不同平台的
 
 详细说明见 `docs/PLATFORM_CAPABILITIES.md`。
 
-## 构建策略
-
-本仓库约定：所有编译、打包和较重检查都放到 GitHub Actions 远端执行，不在手机本地运行编译任务。
-
-本地开发只做轻量编辑、提交和推送。远端构建入口见 `.github/workflows/remote-builds.yml`。
-
 ## 许可证
 
 This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

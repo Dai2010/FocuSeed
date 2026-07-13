@@ -19,4 +19,7 @@ local.properties
 *.aab
 *.msi
 *.deb
+*.dpkg
+*.exe
 *.rpm
+*.pkg.tar.zst
