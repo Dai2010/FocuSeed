@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           notes_file="docs/releases/${GITHUB_REF_NAME}.md"
           if [[ ! -f "$notes_file" ]]; then
-            notes_file="docs/releases/v0.1.2-Android-fix1.md"
+            notes_file="docs/releases/v0.1.2-Android-fix2.md"
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release delete "${GITHUB_REF_NAME}" --yes

@@ -42,6 +42,7 @@ public final class FocusGuardService extends Service {
     private static final String KEY_GUARD_BACKGROUND_ALLOWED_UNTIL = "guard_background_allowed_until";
     private static final String KEY_GUARD_BACKGROUND_REASON = "guard_background_reason";
     private static final String KEY_GUARD_LAST_RETURN_PROMPT = "guard_last_return_prompt";
+    private static final String KEY_GUARD_DISABLED_UNTIL = "guard_disabled_until";
     private static final int FOREGROUND_NOTIFICATION_ID = 301;
     private static final int RETURN_NOTIFICATION_ID = 302;
     private static final int FOCUS_REQUEST_CODE = 1301;
@@ -50,6 +51,7 @@ public final class FocusGuardService extends Service {
     private static final long RETURN_PROMPT_THROTTLE_MILLIS = 4_000L;
     private static final long PHONE_FALLBACK_ALLOW_MILLIS = 30 * 60_000L;
     private static final long EXTERNAL_ALLOW_MILLIS = 10 * 60_000L;
+    private static final long GUARD_DISABLE_MILLIS = 10 * 60_000L;
     private static final String CHANNEL_ID = "focus_guard";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -59,7 +61,7 @@ public final class FocusGuardService extends Service {
     private final Runnable guardTick = new Runnable() {
         @Override
         public void run() {
-            evaluateAndSchedule();
+            safeEvaluateAndSchedule();
         }
     };
 
@@ -68,7 +70,7 @@ public final class FocusGuardService extends Service {
         public void onCallStateChanged(int state, String phoneNumber) {
             if (state == TelephonyManager.CALL_STATE_IDLE) {
                 clearBackgroundAllowance(FocusGuardService.this);
-                handler.post(FocusGuardService.this::evaluateAndSchedule);
+                handler.post(FocusGuardService.this::safeEvaluateAndSchedule);
             }
         }
     };
@@ -83,14 +85,13 @@ public final class FocusGuardService extends Service {
         if (!prefs(context).getBoolean(KEY_RUNNING, false)) {
             return;
         }
+        if (isGuardTemporarilyDisabled(context)) {
+            return;
+        }
         Intent intent = new Intent(context, FocusGuardService.class);
         intent.setAction(ACTION_REFRESH_GUARD);
         try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                context.startForegroundService(intent);
-            } else {
-                context.startService(intent);
-            }
+            context.startService(intent);
         } catch (RuntimeException ignored) {
         }
     }
@@ -149,7 +150,7 @@ public final class FocusGuardService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        evaluateAndSchedule();
+        safeEvaluateAndSchedule();
         return START_STICKY;
     }
 
@@ -168,8 +169,16 @@ public final class FocusGuardService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         markActivityVisible(this, false);
-        evaluateAndSchedule();
+        safeEvaluateAndSchedule();
         super.onTaskRemoved(rootIntent);
+    }
+
+    private void safeEvaluateAndSchedule() {
+        try {
+            evaluateAndSchedule();
+        } catch (RuntimeException error) {
+            disableGuardTemporarily();
+        }
     }
 
     private void evaluateAndSchedule() {
@@ -182,7 +191,10 @@ public final class FocusGuardService extends Service {
             stopSelf();
             return;
         }
-        updateForegroundNotification(snapshot);
+        if (!updateForegroundNotification(snapshot)) {
+            disableGuardTemporarily();
+            return;
+        }
         if (snapshot.phase() == FocusPhase.BREAK) {
             long returnAt = System.currentTimeMillis() + Math.max(1_000L, snapshot.remainingMillis());
             if (prefs(this).getBoolean(KEY_GUARD_ACTIVITY_VISIBLE, false)) {
@@ -202,9 +214,9 @@ public final class FocusGuardService extends Service {
             session.stop();
             return session.snapshot(System.currentTimeMillis());
         }
-        int workMinutes = sharedPreferences.getInt(KEY_WORK, 25);
-        int breakMinutes = sharedPreferences.getInt(KEY_BREAK, 5);
-        int rounds = sharedPreferences.getInt(KEY_ROUNDS, 4);
+        int workMinutes = sanitizePositive(sharedPreferences.getInt(KEY_WORK, 25), 25);
+        int breakMinutes = sanitizePositive(sharedPreferences.getInt(KEY_BREAK, 5), 5);
+        int rounds = sanitizePositive(sharedPreferences.getInt(KEY_ROUNDS, 4), 4);
         long startedAt = sharedPreferences.getLong(KEY_STARTED_AT, 0L);
         if (startedAt <= 0L) {
             session.stop();
@@ -212,6 +224,10 @@ public final class FocusGuardService extends Service {
         }
         session.resume(new FocusSettings(workMinutes, breakMinutes, rounds), startedAt);
         return session.snapshot(System.currentTimeMillis());
+    }
+
+    private static int sanitizePositive(int value, int fallback) {
+        return value > 0 ? value : fallback;
     }
 
     private void handleWorkingPhase(SharedPreferences sharedPreferences, FocusSnapshot snapshot) {
@@ -263,12 +279,20 @@ public final class FocusGuardService extends Service {
         scheduleFocusAlarm(this, now + 1_000L);
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
-            manager.notify(RETURN_NOTIFICATION_ID, buildNotification(snapshot, true));
+            try {
+                manager.notify(RETURN_NOTIFICATION_ID, buildNotification(snapshot, true));
+            } catch (RuntimeException ignored) {
+            }
         }
     }
 
-    private void updateForegroundNotification(FocusSnapshot snapshot) {
-        startForeground(FOREGROUND_NOTIFICATION_ID, buildNotification(snapshot, false));
+    private boolean updateForegroundNotification(FocusSnapshot snapshot) {
+        try {
+            startForeground(FOREGROUND_NOTIFICATION_ID, buildNotification(snapshot, false));
+            return true;
+        } catch (RuntimeException error) {
+            return false;
+        }
     }
 
     private Notification buildNotification(FocusSnapshot snapshot, boolean urgent) {
@@ -311,7 +335,10 @@ public final class FocusGuardService extends Service {
         );
         channel.setDescription("用于工作期全屏拉回与休息期唤醒。");
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        manager.createNotificationChannel(channel);
+        try {
+            manager.createNotificationChannel(channel);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void registerPhoneListenerIfAllowed() {
@@ -325,7 +352,7 @@ public final class FocusGuardService extends Service {
         try {
             manager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
             phoneListenerRegistered = true;
-        } catch (SecurityException ignored) {
+        } catch (RuntimeException ignored) {
         }
     }
 
@@ -335,7 +362,10 @@ public final class FocusGuardService extends Service {
         }
         TelephonyManager manager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
         if (manager != null) {
-            manager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
+            try {
+                manager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
+            } catch (RuntimeException ignored) {
+            }
         }
         phoneListenerRegistered = false;
     }
@@ -348,23 +378,32 @@ public final class FocusGuardService extends Service {
     private void cancelReturnNotification() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
-            manager.cancel(RETURN_NOTIFICATION_ID);
+            try {
+                manager.cancel(RETURN_NOTIFICATION_ID);
+            } catch (RuntimeException ignored) {
+            }
         }
     }
 
     private static void cancelNotifications(Context context) {
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager != null) {
-            manager.cancel(FOREGROUND_NOTIFICATION_ID);
-            manager.cancel(RETURN_NOTIFICATION_ID);
+            try {
+                manager.cancel(FOREGROUND_NOTIFICATION_ID);
+                manager.cancel(RETURN_NOTIFICATION_ID);
+            } catch (RuntimeException ignored) {
+            }
         }
     }
 
     private void stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= 24) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
+        try {
+            if (Build.VERSION.SDK_INT >= 24) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } else {
+                stopForeground(true);
+            }
+        } catch (RuntimeException ignored) {
         }
     }
 
@@ -374,7 +413,22 @@ public final class FocusGuardService extends Service {
             .remove(KEY_GUARD_BACKGROUND_ALLOWED_UNTIL)
             .remove(KEY_GUARD_BACKGROUND_REASON)
             .remove(KEY_GUARD_LAST_RETURN_PROMPT)
+            .remove(KEY_GUARD_DISABLED_UNTIL)
             .apply();
+    }
+
+    private void disableGuardTemporarily() {
+        handler.removeCallbacks(guardTick);
+        prefs(this).edit()
+            .putLong(KEY_GUARD_DISABLED_UNTIL, System.currentTimeMillis() + GUARD_DISABLE_MILLIS)
+            .apply();
+        cancelFocusAlarm(this);
+        cancelReturnNotification();
+        stopSelf();
+    }
+
+    private static boolean isGuardTemporarilyDisabled(Context context) {
+        return System.currentTimeMillis() < prefs(context).getLong(KEY_GUARD_DISABLED_UNTIL, 0L);
     }
 
     private static void scheduleFocusAlarm(Context context, long triggerAtMillis) {
@@ -389,7 +443,10 @@ public final class FocusGuardService extends Service {
             pendingIntentFlags()
         );
         long safeTrigger = Math.max(System.currentTimeMillis() + 1_000L, triggerAtMillis);
-        alarmManager.setAlarmClock(new AlarmManager.AlarmClockInfo(safeTrigger, pendingIntent), pendingIntent);
+        try {
+            alarmManager.setAlarmClock(new AlarmManager.AlarmClockInfo(safeTrigger, pendingIntent), pendingIntent);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private static void cancelFocusAlarm(Context context) {
@@ -403,7 +460,10 @@ public final class FocusGuardService extends Service {
             focusIntent(context),
             pendingIntentFlags()
         );
-        alarmManager.cancel(pendingIntent);
+        try {
+            alarmManager.cancel(pendingIntent);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private Intent focusIntent() {

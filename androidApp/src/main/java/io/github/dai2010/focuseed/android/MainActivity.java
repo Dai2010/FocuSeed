@@ -140,11 +140,11 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        cuteTypeface = Typeface.createFromAsset(getAssets(), "fonts/ZCOOLKuaiLe-Regular.ttf");
+        cuteTypeface = loadCuteTypeface();
         restoreSession();
         setContentView(createLayout());
-        FocusGuardService.startIfSessionRunning(this);
         if (ACTION_FORCE_FOCUS.equals(getIntent().getAction())) {
+            FocusGuardService.startIfSessionRunning(this);
             applyFocusWindowMode();
         }
         registerCallStateListenerIfAllowed();
@@ -154,6 +154,14 @@ public final class MainActivity extends Activity {
         runInitialPermissionCheckOnce();
         checkForUpdatesSilently();
         handler.post(tick);
+    }
+
+    private Typeface loadCuteTypeface() {
+        try {
+            return Typeface.createFromAsset(getAssets(), "fonts/ZCOOLKuaiLe-Regular.ttf");
+        } catch (RuntimeException error) {
+            return Typeface.DEFAULT;
+        }
     }
 
     @Override
@@ -525,12 +533,20 @@ public final class MainActivity extends Activity {
 
     private void updateDialerInfo() {
         StringBuilder builder = new StringBuilder();
-        TelecomManager telecomManager = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
-        String defaultDialer = telecomManager == null ? null : telecomManager.getDefaultDialerPackage();
+        String defaultDialer = null;
+        try {
+            TelecomManager telecomManager = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
+            defaultDialer = telecomManager == null ? null : telecomManager.getDefaultDialerPackage();
+        } catch (RuntimeException ignored) {
+        }
         builder.append("默认拨号器：").append(defaultDialer == null ? "系统未返回" : defaultDialer);
 
         Intent dialIntent = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:"));
-        List<ResolveInfo> candidates = getPackageManager().queryIntentActivities(dialIntent, 0);
+        List<ResolveInfo> candidates = new ArrayList<>();
+        try {
+            candidates = getPackageManager().queryIntentActivities(dialIntent, 0);
+        } catch (RuntimeException ignored) {
+        }
         builder.append(" · 可用候选：").append(candidates.size()).append(" 个");
         dialerText.setText(builder.toString());
     }
@@ -562,6 +578,9 @@ public final class MainActivity extends Activity {
     }
 
     private void onUpdateChecked(UpdateInfo info) {
+        if (!isActivityUsable()) {
+            return;
+        }
         if (!info.updateAvailable()) {
             updateText.setText("更新：已是最新版 v" + info.currentVersion());
             return;
@@ -570,13 +589,16 @@ public final class MainActivity extends Activity {
         updateDownloadButton.setEnabled(true);
         updateAccelerateButton.setEnabled(true);
         updateText.setText("发现新版本 v" + info.latestVersion() + "：" + info.assetName());
-        new AlertDialog.Builder(this)
-            .setTitle("发现 FocuSeed 新版本")
-            .setMessage("当前 v" + info.currentVersion() + "，最新 v" + info.latestVersion() + "。默认会从 GitHub 原地址下载到系统下载目录；如果卡住，可手动切换 ghfast 加速。")
-            .setPositiveButton("下载更新", (dialog, which) -> startUpdateDownload(false))
-            .setNegativeButton("稍后", null)
-            .setNeutralButton("加速下载", (dialog, which) -> startUpdateDownload(true))
-            .show();
+        try {
+            new AlertDialog.Builder(this)
+                .setTitle("发现 FocuSeed 新版本")
+                .setMessage("当前 v" + info.currentVersion() + "，最新 v" + info.latestVersion() + "。默认会从 GitHub 原地址下载到系统下载目录；如果卡住，可手动切换 ghfast 加速。")
+                .setPositiveButton("下载更新", (dialog, which) -> startUpdateDownload(false))
+                .setNegativeButton("稍后", null)
+                .setNeutralButton("加速下载", (dialog, which) -> startUpdateDownload(true))
+                .show();
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void startUpdateDownload(boolean accelerated) {
@@ -731,16 +753,27 @@ public final class MainActivity extends Activity {
             NotificationManager.Policy.PRIORITY_SENDERS_ANY,
             NotificationManager.Policy.PRIORITY_SENDERS_ANY
         );
-        manager.setNotificationPolicy(policy);
-        manager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
+        try {
+            manager.setNotificationPolicy(policy);
+            manager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void updatePolicyInfo() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        boolean granted = manager != null && manager.isNotificationPolicyAccessGranted();
+        boolean granted = false;
+        try {
+            granted = manager != null && manager.isNotificationPolicyAccessGranted();
+        } catch (RuntimeException ignored) {
+        }
         String fullScreenStatus = "";
         if (Build.VERSION.SDK_INT >= 34 && manager != null) {
-            fullScreenStatus = manager.canUseFullScreenIntent() ? " · 全屏拉回：已允许" : " · 全屏拉回：未允许";
+            try {
+                fullScreenStatus = manager.canUseFullScreenIntent() ? " · 全屏拉回：已允许" : " · 全屏拉回：未允许";
+            } catch (RuntimeException ignored) {
+                fullScreenStatus = " · 全屏拉回：系统未返回";
+            }
         }
         policyText.setText(
             (granted ? "勿扰权限：已授权，可保留电话例外" : "勿扰权限：未授权，需要用户在系统设置中开启")
@@ -754,7 +787,10 @@ public final class MainActivity extends Activity {
         }
         TelephonyManager manager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
         if (manager != null) {
-            manager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+            try {
+                manager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+            } catch (RuntimeException ignored) {
+            }
         }
     }
 
@@ -786,29 +822,55 @@ public final class MainActivity extends Activity {
         if (manager == null) {
             return;
         }
-        if (manager.isNotificationPolicyAccessGranted()) {
+        try {
+            if (manager.isNotificationPolicyAccessGranted()) {
+                promptFullScreenIntentIfNeeded();
+                return;
+            }
+        } catch (RuntimeException ignored) {
             promptFullScreenIntentIfNeeded();
             return;
         }
-        new AlertDialog.Builder(this)
-            .setTitle("首次权限检测")
-            .setMessage("FocuSeed 需要勿扰访问来屏蔽通知并保留电话。这个引导只在首次运行自动出现；以后可从左上角菜单手动打开。")
-            .setPositiveButton("去设置", (dialog, which) -> configureDoNotDisturb())
-            .setNegativeButton("稍后", (dialog, which) -> promptFullScreenIntentIfNeeded())
-            .show();
+        if (isActivityUsable()) {
+            try {
+                new AlertDialog.Builder(this)
+                    .setTitle("首次权限检测")
+                    .setMessage("FocuSeed 需要勿扰访问来屏蔽通知并保留电话。这个引导只在首次运行自动出现；以后可从左上角菜单手动打开。")
+                    .setPositiveButton("去设置", (dialog, which) -> configureDoNotDisturb())
+                    .setNegativeButton("稍后", (dialog, which) -> promptFullScreenIntentIfNeeded())
+                    .show();
+            } catch (RuntimeException ignored) {
+            }
+        }
     }
 
     private void promptFullScreenIntentIfNeeded() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT < 34 || manager == null || manager.canUseFullScreenIntent()) {
+        if (Build.VERSION.SDK_INT < 34 || manager == null) {
             return;
         }
-        new AlertDialog.Builder(this)
-            .setTitle("首次权限检测")
-            .setMessage("Android 14 及以上需要允许全屏通知，FocuSeed 才能在工作期被手势切走后更稳定地拉回全屏。")
-            .setPositiveButton("去设置", (dialog, which) -> configureFullScreenIntent())
-            .setNegativeButton("稍后", null)
-            .show();
+        try {
+            if (manager.canUseFullScreenIntent()) {
+                return;
+            }
+        } catch (RuntimeException ignored) {
+            return;
+        }
+        if (isActivityUsable()) {
+            try {
+                new AlertDialog.Builder(this)
+                    .setTitle("首次权限检测")
+                    .setMessage("Android 14 及以上需要允许全屏通知，FocuSeed 才能在工作期被手势切走后更稳定地拉回全屏。")
+                    .setPositiveButton("去设置", (dialog, which) -> configureFullScreenIntent())
+                    .setNegativeButton("稍后", null)
+                    .show();
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    private boolean isActivityUsable() {
+        return !isFinishing() && (Build.VERSION.SDK_INT < 17 || !isDestroyed());
     }
 
     private void configureFullScreenIntent() {
@@ -938,10 +1000,10 @@ public final class MainActivity extends Activity {
 
     private void restoreSession() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        currentWorkMinutes = prefs.getInt(KEY_WORK, currentWorkMinutes);
-        currentBreakMinutes = prefs.getInt(KEY_BREAK, currentBreakMinutes);
-        currentRounds = prefs.getInt(KEY_ROUNDS, currentRounds);
-        exitChancesLeft = prefs.getInt(KEY_EXIT_CHANCES, exitChancesLeft);
+        currentWorkMinutes = sanitizePositive(prefs.getInt(KEY_WORK, currentWorkMinutes), 25);
+        currentBreakMinutes = sanitizePositive(prefs.getInt(KEY_BREAK, currentBreakMinutes), 5);
+        currentRounds = sanitizePositive(prefs.getInt(KEY_ROUNDS, currentRounds), 4);
+        exitChancesLeft = Math.max(0, Math.min(EXIT_CHANCES, prefs.getInt(KEY_EXIT_CHANCES, exitChancesLeft)));
         sessionStartedAtMillis = prefs.getLong(KEY_STARTED_AT, sessionStartedAtMillis);
 
         if (prefs.getBoolean(KEY_RUNNING, false) && sessionStartedAtMillis > 0L) {
@@ -963,6 +1025,10 @@ public final class MainActivity extends Activity {
             .putInt(KEY_ROUNDS, currentRounds)
             .putInt(KEY_EXIT_CHANCES, exitChancesLeft)
             .apply();
+    }
+
+    private static int sanitizePositive(int value, int fallback) {
+        return value > 0 ? value : fallback;
     }
 
     private void clearSession() {
