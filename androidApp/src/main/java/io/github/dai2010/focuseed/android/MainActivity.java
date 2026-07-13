@@ -269,7 +269,7 @@ public final class MainActivity extends Activity {
         NotificationManager.Policy policy = new NotificationManager.Policy(
             NotificationManager.Policy.PRIORITY_CATEGORY_CALLS,
             NotificationManager.Policy.PRIORITY_SENDERS_ANY,
-            NotificationManager.Policy.PRIORITY_SENDERS_NONE
+            NotificationManager.Policy.PRIORITY_SENDERS_ANY
         );
         manager.setNotificationPolicy(policy);
         manager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
