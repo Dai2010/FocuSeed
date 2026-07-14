@@ -92,7 +92,8 @@ public final class FocusGuardService extends Service {
         intent.setAction(ACTION_REFRESH_GUARD);
         try {
             context.startService(intent);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(context, "FocusGuardService.start", error);
         }
     }
 
@@ -102,7 +103,8 @@ public final class FocusGuardService extends Service {
         clearGuardState(context);
         try {
             context.stopService(new Intent(context, FocusGuardService.class));
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(context, "FocusGuardService.stop", error);
         }
     }
 
@@ -177,6 +179,7 @@ public final class FocusGuardService extends Service {
         try {
             evaluateAndSchedule();
         } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.evaluateAndSchedule", error);
             disableGuardTemporarily();
         }
     }
@@ -281,7 +284,8 @@ public final class FocusGuardService extends Service {
         if (manager != null) {
             try {
                 manager.notify(RETURN_NOTIFICATION_ID, buildNotification(snapshot, true));
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException error) {
+                AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.returnNotification", error);
             }
         }
     }
@@ -291,6 +295,7 @@ public final class FocusGuardService extends Service {
             startForeground(FOREGROUND_NOTIFICATION_ID, buildNotification(snapshot, false));
             return true;
         } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.startForeground", error);
             return false;
         }
     }
@@ -337,7 +342,8 @@ public final class FocusGuardService extends Service {
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         try {
             manager.createNotificationChannel(channel);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.createNotificationChannel", error);
         }
     }
 
@@ -352,7 +358,8 @@ public final class FocusGuardService extends Service {
         try {
             manager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
             phoneListenerRegistered = true;
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.registerPhoneListener", error);
         }
     }
 
@@ -364,7 +371,8 @@ public final class FocusGuardService extends Service {
         if (manager != null) {
             try {
                 manager.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE);
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException error) {
+                AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.unregisterPhoneListener", error);
             }
         }
         phoneListenerRegistered = false;
@@ -380,7 +388,8 @@ public final class FocusGuardService extends Service {
         if (manager != null) {
             try {
                 manager.cancel(RETURN_NOTIFICATION_ID);
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException error) {
+                AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.cancelReturnNotification", error);
             }
         }
     }
@@ -391,7 +400,8 @@ public final class FocusGuardService extends Service {
             try {
                 manager.cancel(FOREGROUND_NOTIFICATION_ID);
                 manager.cancel(RETURN_NOTIFICATION_ID);
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException error) {
+                AndroidDiagnostics.recordRecoverable(context, "FocusGuardService.cancelNotifications", error);
             }
         }
     }
@@ -403,7 +413,8 @@ public final class FocusGuardService extends Service {
             } else {
                 stopForeground(true);
             }
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "FocusGuardService.stopForeground", error);
         }
     }
 
@@ -445,7 +456,8 @@ public final class FocusGuardService extends Service {
         long safeTrigger = Math.max(System.currentTimeMillis() + 1_000L, triggerAtMillis);
         try {
             alarmManager.setAlarmClock(new AlarmManager.AlarmClockInfo(safeTrigger, pendingIntent), pendingIntent);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(context, "FocusGuardService.scheduleFocusAlarm", error);
         }
     }
 
@@ -462,7 +474,8 @@ public final class FocusGuardService extends Service {
         );
         try {
             alarmManager.cancel(pendingIntent);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(context, "FocusGuardService.cancelFocusAlarm", error);
         }
     }
 

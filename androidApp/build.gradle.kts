@@ -22,8 +22,8 @@ android {
         applicationId = "io.github.dai2010.focuseed"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.2-Android-fix2"
+        versionCode = 6
+        versionName = "0.1.3-Android-DND-hotfix1"
     }
 
     signingConfigs {

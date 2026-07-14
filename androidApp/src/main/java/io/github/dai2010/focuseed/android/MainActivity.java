@@ -92,6 +92,7 @@ public final class MainActivity extends Activity {
     private TextView policyText;
     private TextView chanceText;
     private TextView updateText;
+    private TextView diagnosticText;
     private LinearLayout menuPanel;
     private Button menuToggleButton;
     private Button updateDownloadButton;
@@ -141,6 +142,7 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         cuteTypeface = loadCuteTypeface();
+        AndroidDiagnostics.logEvent(this, "MainActivity onCreate");
         restoreSession();
         setContentView(createLayout());
         if (ACTION_FORCE_FOCUS.equals(getIntent().getAction())) {
@@ -279,6 +281,7 @@ public final class MainActivity extends Activity {
         dialerText = text("正在检测拨号器…", 12, MUTED, false);
         policyText = text("勿扰权限未检测", 12, MUTED, false);
         updateText = text("更新：启动时会静默检查", 12, MUTED, false);
+        diagnosticText = text(AndroidDiagnostics.statusText(this), 12, MUTED, false);
 
         LinearLayout timerCard = new LinearLayout(this);
         timerCard.setOrientation(LinearLayout.VERTICAL);
@@ -304,6 +307,10 @@ public final class MainActivity extends Activity {
         dial.setOnClickListener(view -> openDialer());
         Button dnd = button("设置勿扰/电话例外");
         dnd.setOnClickListener(view -> configureDoNotDisturb());
+        Button repairDnd = button("紧急修复媒体音量（关闭勿扰）");
+        repairDnd.setOnClickListener(view -> emergencyRepairDoNotDisturb());
+        Button repairDndPrimary = button("紧急修复媒体音量（关闭勿扰）");
+        repairDndPrimary.setOnClickListener(view -> emergencyRepairDoNotDisturb());
         Button fullScreenIntent = button("设置全屏拉回权限");
         fullScreenIntent.setOnClickListener(view -> configureFullScreenIntent());
         updateDownloadButton = button("下载更新");
@@ -312,6 +319,8 @@ public final class MainActivity extends Activity {
         updateAccelerateButton = button("切换加速下载");
         updateAccelerateButton.setEnabled(false);
         updateAccelerateButton.setOnClickListener(view -> startUpdateDownload(true));
+        Button copyDiagnostics = button("复制 Canary 诊断报告");
+        copyDiagnostics.setOnClickListener(view -> copyDiagnosticReport());
 
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -334,21 +343,28 @@ public final class MainActivity extends Activity {
         menuPanel.addView(spacer(8));
         menuPanel.addView(dnd, fullWidth());
         menuPanel.addView(spacer(8));
+        menuPanel.addView(repairDnd, fullWidth());
+        menuPanel.addView(spacer(8));
         menuPanel.addView(fullScreenIntent, fullWidth());
         menuPanel.addView(spacer(8));
         menuPanel.addView(updateDownloadButton, fullWidth());
         menuPanel.addView(spacer(8));
         menuPanel.addView(updateAccelerateButton, fullWidth());
         menuPanel.addView(spacer(8));
+        menuPanel.addView(copyDiagnostics, fullWidth());
+        menuPanel.addView(spacer(8));
         menuPanel.addView(dialerText);
         menuPanel.addView(policyText);
         menuPanel.addView(updateText);
+        menuPanel.addView(diagnosticText);
 
         card.addView(topBar, fullWidth());
         card.addView(menuPanel, fullWidth());
         card.addView(title);
         card.addView(subtitle);
         card.addView(spacer(18));
+        card.addView(repairDndPrimary, fullWidth());
+        card.addView(spacer(10));
         timerCard.addView(phaseText);
         timerCard.addView(timerText);
         timerCard.addView(roundText);
@@ -429,6 +445,13 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void copyDiagnosticReport() {
+        boolean copied = AndroidDiagnostics.copyReportToClipboard(this);
+        String message = copied ? "Canary 诊断报告已复制，可直接粘贴给开发者。" : "复制失败，请尝试截图此页面。";
+        diagnosticText.setText(copied ? "Canary 诊断报告已复制到剪贴板" : AndroidDiagnostics.statusText(this));
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
     private void startSession() {
         currentWorkMinutes = parsePositive(workInput, 25);
         currentBreakMinutes = parsePositive(breakInput, 5);
@@ -442,7 +465,6 @@ public final class MainActivity extends Activity {
         FocusGuardService.clearBackgroundAllowance(this);
         FocusGuardService.start(this);
         applyFocusWindowMode();
-        configureDoNotDisturbIfAllowed();
         render();
     }
 
@@ -732,31 +754,86 @@ public final class MainActivity extends Activity {
         if (manager == null) {
             return;
         }
-        if (!manager.isNotificationPolicyAccessGranted()) {
+        if (!hasDoNotDisturbAccess(manager)) {
             leavingForSettings = true;
             stopFocusLockTaskIfActive();
             FocusGuardService.allowExternal(this, FocusGuardService.REASON_SETTINGS);
             startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
             return;
         }
-        configureDoNotDisturbIfAllowed();
+        repairDoNotDisturbPolicy(manager, false);
         updatePolicyInfo();
     }
 
-    private void configureDoNotDisturbIfAllowed() {
+    private void emergencyRepairDoNotDisturb() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager == null || !manager.isNotificationPolicyAccessGranted()) {
+        if (manager == null) {
+            Toast.makeText(this, "系统通知服务不可用，请手动关闭并重开免打扰。", Toast.LENGTH_LONG).show();
             return;
         }
+        if (!hasDoNotDisturbAccess(manager)) {
+            leavingForSettings = true;
+            stopFocusLockTaskIfActive();
+            FocusGuardService.allowExternal(this, FocusGuardService.REASON_SETTINGS);
+            Toast.makeText(this, "请先给 FocuSeed 勿扰访问权限，回来后再点紧急修复。", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS));
+            return;
+        }
+        if (repairDoNotDisturbPolicy(manager, true)) {
+            updatePolicyInfo();
+            Toast.makeText(this, "已修复：媒体音量已恢复，并已关闭 FocuSeed 造成的勿扰状态。", Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(this, "自动修复失败，请在系统勿扰设置中允许媒体声音。", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean repairDoNotDisturbPolicy(NotificationManager manager, boolean disableDoNotDisturb) {
+        if (manager == null || !hasDoNotDisturbAccess(manager)) {
+            return false;
+        }
+        NotificationManager.Policy currentPolicy = null;
+        try {
+            currentPolicy = manager.getNotificationPolicy();
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "MainActivity.getNotificationPolicy", error);
+        }
+        int categories = currentPolicy == null
+            ? NotificationManager.Policy.PRIORITY_CATEGORY_CALLS
+            : currentPolicy.priorityCategories;
+        categories |= NotificationManager.Policy.PRIORITY_CATEGORY_CALLS;
+        if (Build.VERSION.SDK_INT >= 28) {
+            categories |= NotificationManager.Policy.PRIORITY_CATEGORY_MEDIA;
+            categories |= NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS;
+        }
+        int callSenders = currentPolicy == null
+            ? NotificationManager.Policy.PRIORITY_SENDERS_ANY
+            : currentPolicy.priorityCallSenders;
+        int messageSenders = currentPolicy == null
+            ? NotificationManager.Policy.PRIORITY_SENDERS_ANY
+            : currentPolicy.priorityMessageSenders;
         NotificationManager.Policy policy = new NotificationManager.Policy(
-            NotificationManager.Policy.PRIORITY_CATEGORY_CALLS,
-            NotificationManager.Policy.PRIORITY_SENDERS_ANY,
-            NotificationManager.Policy.PRIORITY_SENDERS_ANY
+            categories,
+            callSenders,
+            messageSenders
         );
         try {
             manager.setNotificationPolicy(policy);
-            manager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY);
-        } catch (RuntimeException ignored) {
+            if (disableDoNotDisturb) {
+                manager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+            }
+            return true;
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "MainActivity.repairDoNotDisturbPolicy", error);
+            return false;
+        }
+    }
+
+    private boolean hasDoNotDisturbAccess(NotificationManager manager) {
+        try {
+            return manager != null && manager.isNotificationPolicyAccessGranted();
+        } catch (RuntimeException error) {
+            AndroidDiagnostics.recordRecoverable(this, "MainActivity.hasDoNotDisturbAccess", error);
+            return false;
         }
     }
 
