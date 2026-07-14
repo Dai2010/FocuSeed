@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "FocuSeed"
-include(":shared", ":desktopApp", ":androidApp")
+include(":shared", ":desktopApp", ":androidApp", ":androidRepairApp")
